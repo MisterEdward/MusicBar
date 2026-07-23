@@ -9,9 +9,11 @@ little **cat slides in from off-screen** to do something silly. 🐱
 
 Inspired by the look of FluentFlyout, built from scratch in **C# / WPF (.NET 8)**.
 
-> ⚠️ **Windows only.** WPF apps can only be *built and run on Windows*. This project was
-> authored on macOS, so it hasn't been compiled here — build it on your Windows 11 box
-> (see below). If anything doesn't compile or behave, tell me and I'll iterate.
+> ⚠️ **Runs on Windows only — but it cross-builds anywhere.** The app itself needs
+> Windows 11 (WPF + SMTC + WASAPI). Compiling it, though, does *not*: the whole thing was
+> written and built on a Mac. `dotnet` ships the Windows Desktop reference packs, so
+> `-p:EnableWindowsTargeting=true` cross-compiles — and even *publishes* the self-contained
+> `win-x64` .exe — from macOS or Linux. See [Cross-building](#cross-building-from-macos--linux).
 
 ---
 
@@ -51,6 +53,25 @@ dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=
 
 The .exe lands in `src/bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/TaskbarMusic.exe`.
 (Use `-r win-arm64` on ARM devices.)
+
+### Cross-building from macOS / Linux
+
+You do **not** need a Windows machine to compile this — only to run it. The .NET SDK ships
+the Windows Desktop reference packs, so add `-p:EnableWindowsTargeting=true`:
+
+```bash
+cd src && dotnet build -p:EnableWindowsTargeting=true
+```
+
+That includes the XAML markup compiler, so it's a genuine full build, not just a syntax
+check. You can even produce the shipping binary from a Mac:
+
+```bash
+cd src && dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableWindowsTargeting=true -p:EnableCompressionInSingleFile=true
+```
+
+This project was in fact written and built entirely on macOS; only testing happened on
+Windows 11.
 
 ---
 
@@ -108,8 +129,10 @@ src/
 - **Swap the cat for a GIF:** drop a `MediaElement` over the `Canvas` in `CatWindow.xaml`
   and drive it from `PlayBehaviorAsync`. The vector cat is intentionally asset-free.
 
-## Known limitations (untested build — flag anything and I'll fix)
+## Known limitations
 
-- Building requires Windows; can't be compiled from macOS.
+- **Running** requires Windows (building doesn't — see [Cross-building](#cross-building-from-macos--linux)).
 - SMTC needs Windows 10 1809+ (Windows 11 recommended).
 - True acrylic is opt-in (see above).
+- Exclusive-fullscreen (not borderless) apps render above every topmost window, so the
+  pill is invisible there regardless of the auto-hide logic.
