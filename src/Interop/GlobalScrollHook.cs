@@ -14,15 +14,24 @@ namespace TaskbarMusic.Interop;
 internal sealed class GlobalScrollHook : IDisposable
 {
     private readonly Window _target;
+    private readonly FrameworkElement _visibleSurface;
     private readonly Action<int> _onScroll; // notches, marshalled to UI thread
     private readonly LowLevelMouseProc _proc; // keep alive against GC
     private IntPtr _hook = IntPtr.Zero;
+    private int _enabled = 1;
 
-    public GlobalScrollHook(Window target, Action<int> onScrollNotches)
+    public GlobalScrollHook(Window target, FrameworkElement visibleSurface, Action<int> onScrollNotches)
     {
         _target = target;
+        _visibleSurface = visibleSurface;
         _onScroll = onScrollNotches;
         _proc = HookProc;
+    }
+
+    public bool IsEnabled
+    {
+        get => Volatile.Read(ref _enabled) != 0;
+        set => Volatile.Write(ref _enabled, value ? 1 : 0);
     }
 
     public void Install()
@@ -38,7 +47,7 @@ internal sealed class GlobalScrollHook : IDisposable
         // Never let a managed exception cross the native hook boundary.
         try
         {
-            if (nCode >= 0 && (int)wParam == WM_MOUSEWHEEL)
+            if (nCode >= 0 && (int)wParam == WM_MOUSEWHEEL && IsEnabled)
             {
                 var data = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
                 if (CursorIsOverTarget(data.pt))
@@ -62,12 +71,33 @@ internal sealed class GlobalScrollHook : IDisposable
 
     private bool CursorIsOverTarget(POINT pt)
     {
+        if (!_target.IsVisible || _target.WindowState == WindowState.Minimized ||
+            _target.Opacity <= 0.01 || !_visibleSurface.IsVisible ||
+            _visibleSurface.ActualWidth <= 0 || _visibleSurface.ActualHeight <= 0)
+        {
+            return false;
+        }
+
         var hwnd = new WindowInteropHelper(_target).Handle;
         if (hwnd == IntPtr.Zero) return false;
-        // Both the hook point and GetWindowRect are in physical screen pixels,
-        // so no DPI conversion is needed.
-        if (!GetWindowRect(hwnd, out RECT r)) return false;
-        return pt.X >= r.Left && pt.X < r.Right && pt.Y >= r.Top && pt.Y < r.Bottom;
+
+        // Reject the part clipped at a mixed-DPI monitor seam.
+        IntPtr targetMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if (MonitorFromPoint(pt, MONITOR_DEFAULTTONULL) != targetMonitor) return false;
+
+        // PointToScreen includes the element's current render transform, so the
+        // wheel area follows the visible pill even during shrink/bounce animations.
+        Point topLeft = _visibleSurface.PointToScreen(new Point(0, 0));
+        Point bottomRight = _visibleSurface.PointToScreen(
+            new Point(_visibleSurface.ActualWidth, _visibleSurface.ActualHeight));
+        var bounds = new PixelRect(
+            (int)Math.Floor(Math.Min(topLeft.X, bottomRight.X)),
+            (int)Math.Floor(Math.Min(topLeft.Y, bottomRight.Y)),
+            (int)Math.Ceiling(Math.Max(topLeft.X, bottomRight.X)),
+            (int)Math.Ceiling(Math.Max(topLeft.Y, bottomRight.Y)));
+
+        // The transparent corners of the stadium are not interactive.
+        return RoundedRectHitTest.Contains(bounds, pt.X, pt.Y, bounds.Height / 2.0);
     }
 
     public void Dispose()

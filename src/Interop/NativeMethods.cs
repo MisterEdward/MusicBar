@@ -7,11 +7,11 @@ internal static class NativeMethods
 {
     // ---- Window styles ----------------------------------------------------
     public const int GWL_EXSTYLE = -20;
-    public const int GWL_STYLE   = -16;
+    public const int GWL_STYLE = -16;
     public const int WS_EX_TOOLWINDOW = 0x00000080; // hide from Alt-Tab
     public const int WS_EX_NOACTIVATE = 0x08000000; // never steal focus
-    public const int WS_EX_TOPMOST   = 0x00000008;
-    public const int WS_CAPTION      = 0x00C00000; // title bar (normal/maximised window)
+    public const int WS_EX_TOPMOST = 0x00000008;
+    public const int WS_CAPTION = 0x00C00000; // title bar (normal/maximised window)
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
@@ -35,6 +35,14 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsIconic(IntPtr hWnd);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT { public int X, Y; }
@@ -126,6 +134,18 @@ internal static class NativeMethods
     // ---- Monitor / taskbar geometry --------------------------------------
     public const uint MONITOR_DEFAULTTONULL = 0;
     public const uint MONITOR_DEFAULTTONEAREST = 2;
+    public const int SM_XVIRTUALSCREEN = 76;
+    public const int SM_YVIRTUALSCREEN = 77;
+    public const int SM_CXVIRTUALSCREEN = 78;
+    public const int SM_CYVIRTUALSCREEN = 79;
+    public const int WM_DISPLAYCHANGE = 0x007E;
+    public const int WM_SETTINGCHANGE = 0x001A;
+    public const int WM_DPICHANGED = 0x02E0;
+    public const uint ABM_GETAUTOHIDEBAREX = 0x0000000B;
+    public const uint ABE_LEFT = 0;
+    public const uint ABE_TOP = 1;
+    public const uint ABE_RIGHT = 2;
+    public const uint ABE_BOTTOM = 3;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct MONITORINFO
@@ -136,11 +156,37 @@ internal static class NativeMethods
         public uint dwFlags;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct APPBARDATA
+    {
+        public int cbSize;
+        public IntPtr hWnd;
+        public uint uCallbackMessage;
+        public uint uEdge;
+        public RECT rc;
+        public IntPtr lParam;
+    }
+
+    [DllImport("shell32.dll")]
+    public static extern UIntPtr SHAppBarMessage(uint dwMessage, ref APPBARDATA pData);
+
     [DllImport("user32.dll")]
     public static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
 
     [DllImport("user32.dll")]
     public static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+    public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetDpiForWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    public static extern int GetSystemMetrics(int index);
 
     // ---- Foreground / fullscreen detection --------------------------------
     [DllImport("user32.dll")]
@@ -163,6 +209,7 @@ internal static class NativeMethods
     public enum DWMWINDOWATTRIBUTE
     {
         DWMWA_NCRENDERING_POLICY = 2,
+        DWMWA_CLOAKED = 14,
         DWMWA_WINDOW_CORNER_PREFERENCE = 33,
         DWMWA_BORDER_COLOR = 34,
     }
@@ -173,4 +220,7 @@ internal static class NativeMethods
 
     [DllImport("dwmapi.dll")]
     public static extern int DwmSetWindowAttribute(IntPtr hwnd, DWMWINDOWATTRIBUTE attr, ref int value, int size);
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmGetWindowAttribute(IntPtr hwnd, DWMWINDOWATTRIBUTE attr, out int value, int size);
 }

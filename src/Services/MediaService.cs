@@ -45,9 +45,17 @@ internal sealed class MediaService : IDisposable
     };
 
     private readonly Dispatcher _ui;
+    private readonly object _stateLock = new();
+    private readonly SemaphoreSlim _updateGate = new(1, 1);
+    private readonly SemaphoreSlim _transportGate = new(1, 1);
     private GlobalSystemMediaTransportControlsSessionManager? _manager;
     private GlobalSystemMediaTransportControlsSession? _tracked;
     private readonly Random _rng = new();
+    private readonly Dictionary<MediaTrackKey, (Color Primary, Color Secondary)> _paletteCache = new();
+    private readonly Queue<MediaTrackKey> _paletteOrder = new();
+    private readonly LatestVersionGate _versionGate = new();
+    private int _disposed;
+    private const int PaletteCacheCapacity = 64;
 
     public event Action<MediaInfo>? Changed;
 
@@ -55,9 +63,18 @@ internal sealed class MediaService : IDisposable
 
     public async Task InitializeAsync()
     {
-        _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-        _manager.SessionsChanged += (_, _) => Reevaluate();
-        _manager.CurrentSessionChanged += (_, _) => Reevaluate();
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+
+        var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+        lock (_stateLock)
+        {
+            if (_disposed != 0) return;
+            if (_manager is not null) return;
+
+            _manager = manager;
+            _manager.SessionsChanged += OnManagerChanged;
+            _manager.CurrentSessionChanged += OnManagerChanged;
+        }
         Reevaluate();
     }
 
@@ -65,17 +82,26 @@ internal sealed class MediaService : IDisposable
 
     private void Reevaluate()
     {
+        GlobalSystemMediaTransportControlsSession? chosen;
+        long version;
+
         // Runs on a WinRT thread-pool thread. A session can go invalid between
         // enumeration and property reads (source app closes) -> COMException ->
         // hard crash. Guard like BuildInfoAsync already does.
         try
         {
-            var chosen = PickBestSession();
-            if (!ReferenceEquals(chosen, _tracked))
+            lock (_stateLock)
             {
-                Detach(_tracked);
-                _tracked = chosen;
-                Attach(_tracked);
+                if (_disposed != 0) return;
+
+                chosen = PickBestSession();
+                if (!ReferenceEquals(chosen, _tracked))
+                {
+                    Detach(_tracked);
+                    _tracked = chosen;
+                    Attach(_tracked);
+                }
+                version = _versionGate.Advance();
             }
         }
         catch (Exception ex)
@@ -83,7 +109,7 @@ internal sealed class MediaService : IDisposable
             App.LogException("MediaService (WinRT callback thread)", ex);
             return;
         }
-        _ = PushUpdateAsync();
+        _ = PushUpdateAsync(chosen, version);
     }
 
     private GlobalSystemMediaTransportControlsSession? PickBestSession()
@@ -118,28 +144,75 @@ internal sealed class MediaService : IDisposable
     private void Attach(GlobalSystemMediaTransportControlsSession? s)
     {
         if (s is null) return;
-        s.MediaPropertiesChanged += OnSessionChanged;
-        s.PlaybackInfoChanged += OnSessionChanged;
+        try
+        {
+            s.MediaPropertiesChanged += OnSessionChanged;
+            s.PlaybackInfoChanged += OnSessionChanged;
+        }
+        catch
+        {
+            // A session can vanish while handlers are being attached.
+            Detach(s);
+        }
     }
 
     private void Detach(GlobalSystemMediaTransportControlsSession? s)
     {
         if (s is null) return;
-        s.MediaPropertiesChanged -= OnSessionChanged;
-        s.PlaybackInfoChanged -= OnSessionChanged;
+        try { s.MediaPropertiesChanged -= OnSessionChanged; } catch { }
+        try { s.PlaybackInfoChanged -= OnSessionChanged; } catch { }
     }
 
     private void OnSessionChanged(GlobalSystemMediaTransportControlsSession sender, object args)
         // A property changed but the *best* session might now be different too.
         => Reevaluate();
 
+    private void OnManagerChanged(
+        GlobalSystemMediaTransportControlsSessionManager sender,
+        object args) => Reevaluate();
+
     // ---- Snapshot ---------------------------------------------------------
 
-    private async Task PushUpdateAsync()
+    private async Task PushUpdateAsync(
+        GlobalSystemMediaTransportControlsSession? session,
+        long version)
     {
-        var info = await BuildInfoAsync(_tracked);
-        if (_ui.HasShutdownStarted) return; // don't post to a dying Dispatcher
-        _ = _ui.BeginInvoke(() => Changed?.Invoke(info));
+        await _updateGate.WaitAsync();
+        try
+        {
+            // Coalesce queued callbacks before doing an expensive WinRT/art read.
+            if (!IsCurrent(session, version)) return;
+
+            var info = await BuildInfoAsync(session);
+            if (!IsCurrent(session, version) || _ui.HasShutdownStarted) return;
+
+            _ = _ui.BeginInvoke(() =>
+            {
+                // The dispatcher may have been busy while the track changed.
+                if (IsCurrent(session, version))
+                    Changed?.Invoke(info);
+            });
+        }
+        catch (Exception ex)
+        {
+            App.LogException("MediaService update pipeline", ex);
+        }
+        finally
+        {
+            _updateGate.Release();
+        }
+    }
+
+    private bool IsCurrent(
+        GlobalSystemMediaTransportControlsSession? session,
+        long version)
+    {
+        lock (_stateLock)
+        {
+            return _disposed == 0
+                && _versionGate.IsCurrent(version)
+                && ReferenceEquals(session, _tracked);
+        }
     }
 
     private async Task<MediaInfo> BuildInfoAsync(GlobalSystemMediaTransportControlsSession? s)
@@ -153,11 +226,19 @@ internal sealed class MediaService : IDisposable
                 == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
 
             var art = await LoadThumbnailAsync(props.Thumbnail);
-            var (a1, a2) = ColorHelper.FromArt(art as BitmapSource, _rng);
+            string artist = string.IsNullOrWhiteSpace(props.Artist)
+                ? (props.AlbumArtist ?? "")
+                : props.Artist;
+            var paletteKey = new MediaTrackKey(
+                s.SourceAppUserModelId ?? "",
+                props.Title ?? "",
+                artist,
+                props.AlbumTitle ?? "");
+            var (a1, a2) = GetOrCreatePalette(paletteKey, art as BitmapSource);
 
             return new MediaInfo(
                 Title: props.Title ?? "",
-                Artist: string.IsNullOrWhiteSpace(props.Artist) ? (props.AlbumArtist ?? "") : props.Artist,
+                Artist: artist,
                 IsPlaying: playing,
                 CanGoNext: pb?.Controls.IsNextEnabled ?? false,
                 CanGoPrevious: pb?.Controls.IsPreviousEnabled ?? false,
@@ -172,6 +253,25 @@ internal sealed class MediaService : IDisposable
         }
     }
 
+    private (Color Primary, Color Secondary) GetOrCreatePalette(
+        MediaTrackKey key,
+        BitmapSource? art)
+    {
+        // BuildInfoAsync is serialized by _updateGate, so Random and the cache
+        // are only ever touched by one update at a time.
+        if (_paletteCache.TryGetValue(key, out var palette))
+            return palette;
+
+        palette = ColorHelper.FromArt(art, _rng);
+        _paletteCache[key] = palette;
+        _paletteOrder.Enqueue(key);
+
+        if (_paletteOrder.Count > PaletteCacheCapacity)
+            _paletteCache.Remove(_paletteOrder.Dequeue());
+
+        return palette;
+    }
+
     private static async Task<ImageSource?> LoadThumbnailAsync(IRandomAccessStreamReference? thumbRef)
     {
         if (thumbRef is null) return null;
@@ -180,7 +280,7 @@ internal sealed class MediaService : IDisposable
             using var stream = await thumbRef.OpenReadAsync();
             if (stream.Size == 0) return null;
 
-            var reader = new DataReader(stream);
+            using var reader = new DataReader(stream);
             await reader.LoadAsync((uint)stream.Size);
             var bytes = new byte[stream.Size];
             reader.ReadBytes(bytes);
@@ -204,18 +304,62 @@ internal sealed class MediaService : IDisposable
 
     public async Task TogglePlayPauseAsync()
     {
-        if (_tracked is not null) await _tracked.TryTogglePlayPauseAsync();
+        await RunTransportAsync(static s => s.TryTogglePlayPauseAsync().AsTask());
     }
 
     public async Task NextAsync()
     {
-        if (_tracked is not null) await _tracked.TrySkipNextAsync();
+        await RunTransportAsync(static s => s.TrySkipNextAsync().AsTask());
     }
 
     public async Task PreviousAsync()
     {
-        if (_tracked is not null) await _tracked.TrySkipPreviousAsync();
+        await RunTransportAsync(static s => s.TrySkipPreviousAsync().AsTask());
     }
 
-    public void Dispose() => Detach(_tracked);
+    private async Task RunTransportAsync(
+        Func<GlobalSystemMediaTransportControlsSession, Task<bool>> operation)
+    {
+        await _transportGate.WaitAsync();
+        try
+        {
+            GlobalSystemMediaTransportControlsSession? session;
+            lock (_stateLock)
+            {
+                if (_disposed != 0) return;
+                session = _tracked;
+            }
+
+            if (session is not null)
+                await operation(session);
+        }
+        catch
+        {
+            // The selected session can disappear between snapshot and command.
+        }
+        finally
+        {
+            _transportGate.Release();
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (_stateLock)
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
+            _versionGate.Advance();
+            Detach(_tracked);
+            _tracked = null;
+
+            if (_manager is not null)
+            {
+                try { _manager.SessionsChanged -= OnManagerChanged; } catch { }
+                try { _manager.CurrentSessionChanged -= OnManagerChanged; } catch { }
+                _manager = null;
+            }
+            Changed = null;
+        }
+    }
 }

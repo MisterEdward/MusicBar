@@ -10,12 +10,25 @@
     <UseWPF>true</UseWPF>
     <!-- WinForms only for the system-tray NotifyIcon. -->
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- The process is WPF-hosted but also references WinForms for NotifyIcon.
+         Declare the same mode here so the WinForms analyzer and generated
+         bootstrap configuration agree with the WPF application manifest. -->
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- WFAC010 is a WinForms-only diagnostic. This process is started by WPF,
+         which still consumes app.manifest; removing its PerMonitorV2 declaration
+         would regress WPF monitor transitions. The equivalent WinForms property
+         above keeps the tray dependency aligned, so suppress only this mismatch. -->
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>TaskbarMusic</AssemblyName>
     <RootNamespace>TaskbarMusic</RootNamespace>
+    <Version>1.1.0</Version>
+    <Authors>MisterEdward</Authors>
+    <RepositoryUrl>https://github.com/MisterEdward/MusicBar</RepositoryUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <!-- Single, self-describing window; no console. -->
     <StartupObject>TaskbarMusic.App</StartupObject>
   </PropertyGroup>

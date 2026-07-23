@@ -24,6 +24,7 @@ internal static class FullscreenDetector
     {
         var fg = GetForegroundWindow();
         if (fg == IntPtr.Zero || fg == GetShellWindow() || fg == pillHwnd) return false;
+        if (!IsWindowVisible(fg) || IsIconic(fg) || IsCloaked(fg)) return false;
 
         var sb = new StringBuilder(256);
         GetClassName(fg, sb, sb.Capacity);
@@ -35,28 +36,28 @@ internal static class FullscreenDetector
         // pill vanish on a taskbar/Task-View click ("need one more click to bring back").
         if (IsExplorerOwned(fg)) return false;
 
-        // Distinguish "maximised" from "real fullscreen" by WINDOW STYLE, not
-        // showCmd: a normal/maximised window keeps a title bar (WS_CAPTION); a
-        // fullscreen app (game, fullscreen video, borderless) removes it. Using
-        // showCmd wrongly excluded fullscreen apps that keep a maximised window
-        // state (e.g. fullscreen video launched from a maximised browser), so the
-        // pill didn't hide. The style test still excludes a plain maximised window
-        // (which has a caption) even on an auto-hide-taskbar monitor.
-        int style = GetWindowLong(fg, GWL_STYLE);
-        if ((style & WS_CAPTION) == WS_CAPTION) return false;
-
-        if (MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST) !=
-            MonitorFromWindow(pillHwnd, MONITOR_DEFAULTTONEAREST)) return false;
+        IntPtr foregroundMonitor = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+        if (foregroundMonitor != MonitorFromWindow(pillHwnd, MONITOR_DEFAULTTONEAREST)) return false;
 
         var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
-        if (!GetMonitorInfo(MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST), ref mi)) return false;
+        if (!GetMonitorInfo(foregroundMonitor, ref mi)) return false;
         if (!GetWindowRect(fg, out RECT r)) return false;
 
-        const int tol = 2;
+        var window = new PixelRect(r.Left, r.Top, r.Right, r.Bottom);
         RECT m = mi.rcMonitor;
-        return r.Left <= m.Left + tol && r.Top <= m.Top + tol &&
-               r.Right >= m.Right - tol && r.Bottom >= m.Bottom - tol;
+        var monitor = new PixelRect(m.Left, m.Top, m.Right, m.Bottom);
+        if (!FullscreenGeometry.CoversMonitor(window, monitor)) return false;
+
+        // A normal maximised window retains WS_CAPTION. Geometry remains the
+        // primary test: borderless games and browser/video fullscreen modes often
+        // retain a maximised show state, so WINDOWPLACEMENT alone is unreliable.
+        int style = GetWindowLong(fg, GWL_STYLE);
+        return (style & WS_CAPTION) != WS_CAPTION;
     }
+
+    private static bool IsCloaked(IntPtr hwnd) =>
+        DwmGetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE.DWMWA_CLOAKED,
+            out int cloaked, sizeof(int)) == 0 && cloaked != 0;
 
     private static bool IsExplorerOwned(IntPtr hwnd)
     {

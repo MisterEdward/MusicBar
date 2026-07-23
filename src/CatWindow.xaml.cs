@@ -3,30 +3,41 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
+using TaskbarMusic.Interop;
 using static TaskbarMusic.Interop.NativeMethods;
 
 namespace TaskbarMusic;
 
 /// <summary>
-/// A whimsical idle companion: a vector cat that occasionally slides in from
-/// off-screen next to the pill, does a little sleep/play bit, and slides away.
-/// Click-through and never focus-stealing, so it's purely decorative.
-///
-/// Want a real GIF instead? Drop a MediaElement over the Canvas in
-/// CatWindow.xaml and drive it from <see cref="PlayBehaviorAsync"/>.
+/// A geometric motion-branding cat that makes one short visit after a
+/// play-to-idle transition. It is click-through and never focus-stealing.
 /// </summary>
 public partial class CatWindow : Window
 {
     private const int WS_EX_TRANSPARENT = 0x20;
+    private static readonly TimeSpan AppearanceDelay = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan VisitDuration = TimeSpan.FromSeconds(30);
 
     private readonly Random _rng = new();
-    private readonly DispatcherTimer _scheduler = new();
     private readonly TranslateTransform _zzzShift = new();
     private readonly TranslateTransform _hop = new();
 
-    private Func<Rect>? _getPillRect;
-    private bool _idle;
+    private Func<CatAnchor?>? _getPillAnchor;
+    private Func<CatAnchor?>? _pendingPillAnchor;
+    private CancellationTokenSource? _visitCancellation;
+    private Task _visit = Task.CompletedTask;
     private bool _onStage;
+    private double _offstageX = -150;
+    private VisitState _state;
+
+    private enum VisitState
+    {
+        Dormant,
+        Waiting,
+        Entering,
+        Performing,
+        Exiting,
+    }
 
     public CatWindow()
     {
@@ -40,7 +51,6 @@ public partial class CatWindow : Window
 
         Zzz.RenderTransform = _zzzShift;
         Opacity = 0;
-        _scheduler.Tick += async (_, _) => { _scheduler.Stop(); await MaybeAppearAsync(); };
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -54,73 +64,128 @@ public partial class CatWindow : Window
 
     // ---- Public control ---------------------------------------------------
 
-    public void StartIdle(Func<Rect> getPillRect)
+    internal void StartIdle(Func<CatAnchor?> getPillAnchor)
     {
-        _getPillRect = getPillRect;
-        if (_idle) return;
-        _idle = true;
-        ScheduleNext(firstTime: true);
+        ArgumentNullException.ThrowIfNull(getPillAnchor);
+        Dispatcher.VerifyAccess();
+
+        if (_state != VisitState.Dormant)
+        {
+            // A new play→stop can arrive while the canceled visit is still
+            // animating out. Keep exactly one replacement and start it only
+            // after the old state machine has fully returned to Dormant.
+            if (_visitCancellation?.IsCancellationRequested == true)
+                _pendingPillAnchor = getPillAnchor;
+            return;
+        }
+
+        _getPillAnchor = getPillAnchor;
+        _visitCancellation = new CancellationTokenSource();
+        _visit = RunVisitAsync(_visitCancellation);
     }
 
     public void StopIdle()
     {
-        _idle = false;
-        _scheduler.Stop();
-        if (_onStage) _ = ExitAsync(fast: true);
+        Dispatcher.VerifyAccess();
+        _pendingPillAnchor = null;
+        _visitCancellation?.Cancel();
     }
 
-    // ---- Scheduling -------------------------------------------------------
-
-    private void ScheduleNext(bool firstTime)
+    /// <summary>Waits for the active visit to stop. Used by application shutdown.</summary>
+    public async Task StopIdleAsync()
     {
-        _scheduler.Interval = firstTime
-            ? TimeSpan.FromSeconds(_rng.Next(4, 9))
-            : TimeSpan.FromSeconds(_rng.Next(28, 75));
-        _scheduler.Start();
+        Dispatcher.VerifyAccess();
+        StopIdle();
+        await _visit;
     }
 
-    private async Task MaybeAppearAsync()
+    // ---- State machine ----------------------------------------------------
+
+    private async Task RunVisitAsync(CancellationTokenSource owner)
     {
-        if (!_idle || _onStage || _getPillRect is null) return;
-        await EnterAsync();
-        if (_idle) await PlayBehaviorAsync();
-        await ExitAsync(fast: false);
-        // One-shot: do NOT reschedule. The cat only returns after the next
-        // play -> stop transition (StopIdle/StartIdle re-arm it).
+        var token = owner.Token;
+        try
+        {
+            _state = VisitState.Waiting;
+            await Task.Delay(AppearanceDelay, token);
+
+            token.ThrowIfCancellationRequested();
+            if (_getPillAnchor is null || !TryPositionBesidePill())
+                return;
+
+            _state = VisitState.Entering;
+            await EnterAsync(token);
+
+            _state = VisitState.Performing;
+            await PlayBehaviorAsync(token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // Playback resumed or the app is shutting down.
+        }
+        catch (Exception ex)
+        {
+            App.LogException("Idle cat visit", ex);
+        }
+        finally
+        {
+            try
+            {
+                if (_onStage)
+                {
+                    _state = VisitState.Exiting;
+                    await ExitAsync(fast: token.IsCancellationRequested);
+                }
+            }
+            catch (Exception ex)
+            {
+                App.LogException("Idle cat exit", ex);
+            }
+
+            if (ReferenceEquals(_visitCancellation, owner))
+            {
+                var rearm = _pendingPillAnchor;
+                _pendingPillAnchor = null;
+                _visitCancellation = null;
+                _getPillAnchor = null;
+                _state = VisitState.Dormant;
+
+                if (rearm is not null)
+                    StartIdle(rearm);
+            }
+            owner.Dispose();
+        }
     }
 
     // ---- Choreography -----------------------------------------------------
 
-    private async Task EnterAsync()
+    private async Task EnterAsync(CancellationToken token)
     {
         _onStage = true;
-        PositionBesidePill();
-        Slide.X = -Width;
+        Slide.X = _offstageX;
         Opacity = 1;
         StartBreathing();
         await AnimateAsync(Slide, TranslateTransform.XProperty, 0,
             TimeSpan.FromMilliseconds(650),
-            new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.4 });
+            new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.4 }, token);
     }
 
-    private async Task PlayBehaviorAsync()
+    private async Task PlayBehaviorAsync(CancellationToken token)
     {
         // Single ~30s visit: a little intro (sleep or play), then settle down.
-        var until = DateTime.UtcNow.AddSeconds(30);
         bool sleep = _rng.Next(2) == 0;
 
         if (sleep) { ShowZzz(true); StartTailWag(gentle: true); }
         else
         {
             StartTailWag(gentle: false);
-            for (int i = 0; i < _rng.Next(2, 4) && _idle; i++) await HopAsync();
+            for (int i = 0; i < _rng.Next(2, 4); i++)
+                await HopAsync(token);
             StartTailWag(gentle: true); // calm down after the hops
             ShowZzz(true);
         }
 
-        // Stay for the rest of the 30s (bail immediately if playback resumes).
-        while (_idle && DateTime.UtcNow < until)
-            await Task.Delay(250);
+        await Task.Delay(VisitDuration, token);
 
         ShowZzz(false);
         StopTailWag();
@@ -130,28 +195,45 @@ public partial class CatWindow : Window
     {
         if (!_onStage) return;
         ShowZzz(false);
-        await AnimateAsync(Slide, TranslateTransform.XProperty, -Width,
+        await AnimateAsync(Slide, TranslateTransform.XProperty, _offstageX,
             TimeSpan.FromMilliseconds(fast ? 260 : 520),
-            new CubicEase { EasingMode = EasingMode.EaseIn });
+            new CubicEase { EasingMode = EasingMode.EaseIn }, CancellationToken.None);
         Opacity = 0;
         StopBreathing();
         StopTailWag();
         _onStage = false;
     }
 
-    private void PositionBesidePill()
+    private bool TryPositionBesidePill()
     {
-        var r = _getPillRect!.Invoke();
-        Left = r.Left - Width + 12;      // just left of the pill
-        Top = r.Bottom - Height + 4;     // standing on its baseline
+        CatAnchor? anchor = _getPillAnchor!.Invoke();
+        if (anchor is null)
+            return false;
+
+        double scale = Math.Max(1, anchor.Value.Dpi) / 96.0;
+        int widthPx = Math.Max(1, (int)Math.Round(Width * scale));
+        int heightPx = Math.Max(1, (int)Math.Round(Height * scale));
+        if (!CatPlacement.TryResolve(
+            anchor.Value.Pill, anchor.Value.Monitor, widthPx, heightPx, out var placement))
+            return false;
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero) return false;
+        PixelRect bounds = placement.Bounds;
+        if (!SetWindowPos(
+            hwnd, HWND_TOPMOST, bounds.Left, bounds.Top, bounds.Width, bounds.Height, SWP_NOACTIVATE))
+            return false;
+
+        _offstageX = placement.EntersFromLeft ? -Width : Width;
+        return true;
     }
 
-    private async Task HopAsync()
+    private async Task HopAsync(CancellationToken token)
     {
         await AnimateAsync(_hop, TranslateTransform.YProperty, -10,
-            TimeSpan.FromMilliseconds(160), new SineEase { EasingMode = EasingMode.EaseOut });
+            TimeSpan.FromMilliseconds(160), new SineEase { EasingMode = EasingMode.EaseOut }, token);
         await AnimateAsync(_hop, TranslateTransform.YProperty, 0,
-            TimeSpan.FromMilliseconds(220), new BounceEase { Bounces = 1, Bounciness = 3 });
+            TimeSpan.FromMilliseconds(220), new BounceEase { Bounces = 1, Bounciness = 3 }, token);
     }
 
     // ---- Ambient loops (direct property animations) -----------------------
@@ -198,11 +280,33 @@ public partial class CatWindow : Window
     // ---- Animation plumbing ----------------------------------------------
 
     private static Task AnimateAsync(IAnimatable target, DependencyProperty prop, double to,
-        TimeSpan dur, IEasingFunction ease)
+        TimeSpan dur, IEasingFunction ease, CancellationToken token)
     {
-        var tcs = new TaskCompletionSource();
+        token.ThrowIfCancellationRequested();
+
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var anim = new DoubleAnimation(to, dur) { EasingFunction = ease, FillBehavior = FillBehavior.HoldEnd };
-        anim.Completed += (_, _) => tcs.TrySetResult();
+        EventHandler? completed = null;
+        CancellationTokenRegistration registration = default;
+
+        completed = (_, _) =>
+        {
+            anim.Completed -= completed;
+            registration.Dispose();
+            tcs.TrySetResult();
+        };
+        anim.Completed += completed;
+
+        if (token.CanBeCanceled)
+        {
+            registration = token.Register(() =>
+            {
+                anim.Completed -= completed;
+                target.BeginAnimation(prop, null);
+                tcs.TrySetCanceled(token);
+            });
+        }
+
         target.BeginAnimation(prop, anim);
         return tcs.Task;
     }

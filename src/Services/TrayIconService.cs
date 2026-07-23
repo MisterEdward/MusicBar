@@ -1,6 +1,6 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
-using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace TaskbarMusic.Services;
@@ -14,14 +14,11 @@ namespace TaskbarMusic.Services;
 internal sealed class TrayIconService : IDisposable
 {
     private readonly NotifyIcon _icon;
+    private readonly ContextMenuStrip _menu;
+    private readonly Icon _iconImage;
+    private readonly TrayMessageWindow _messageWindow = new();
     private readonly ToolStripMenuItem _startup, _lock, _cat;
-
-    // NotifyIcon's own right-click path calls a private ShowContextMenu() that does
-    // SetForegroundWindow(...) first — required for the menu to dismiss on the very
-    // next click. Our manual left-click Show() skipped that, leaving an orphaned
-    // topmost popup that ate the next click ("need one more click anywhere" bug).
-    private static readonly MethodInfo? ShowContextMenuMethod =
-        typeof(NotifyIcon).GetMethod("ShowContextMenu", BindingFlags.Instance | BindingFlags.NonPublic);
+    private bool _disposed;
 
     public event Action? StartupToggled, LockToggled, CatToggled, ResetRequested, ExitRequested;
 
@@ -33,26 +30,22 @@ internal sealed class TrayIconService : IDisposable
         var reset = Item("Reset position", () => ResetRequested?.Invoke());
         var exit = Item("Exit", () => ExitRequested?.Invoke());
 
-        var menu = new ContextMenuStrip();
-        menu.Items.AddRange(new ToolStripItem[]
+        _menu = new ContextMenuStrip();
+        _menu.Items.AddRange(new ToolStripItem[]
         {
             _startup, _lock, _cat, new ToolStripSeparator(), reset, new ToolStripSeparator(), exit,
         });
 
+        _iconImage = BuildIcon();
         _icon = new NotifyIcon
         {
             Text = "Taskbar Music",
             Visible = true,
-            Icon = BuildIcon(),
-            ContextMenuStrip = menu,
+            Icon = _iconImage,
+            ContextMenuStrip = _menu,
         };
         // Left-click should also open the menu (default only opens on right-click).
-        _icon.MouseClick += (_, e) =>
-        {
-            if (e.Button != MouseButtons.Left) return;
-            if (ShowContextMenuMethod != null) ShowContextMenuMethod.Invoke(_icon, null);
-            else menu.Show(Cursor.Position); // fallback if the private API ever changes
-        };
+        _icon.MouseClick += OnMouseClick;
     }
 
     public void SetStates(bool startup, bool locked, bool cat)
@@ -89,13 +82,75 @@ internal sealed class TrayIconService : IDisposable
             g.DrawLine(pen, 15, 10, 24, 8);        // beam
         }
         IntPtr h = bmp.GetHicon();
-        using var tmp = Icon.FromHandle(h);
-        return (Icon)tmp.Clone();
+        try
+        {
+            using var tmp = Icon.FromHandle(h);
+            return (Icon)tmp.Clone();
+        }
+        finally
+        {
+            DestroyIcon(h);
+        }
+    }
+
+    private void OnMouseClick(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || _disposed)
+            return;
+
+        // Match the native tray-menu contract without calling NotifyIcon's
+        // private ShowContextMenu method. The foreground owner makes the popup
+        // dismiss on the very next outside click; WM_NULL completes the pattern
+        // recommended for notification-area context menus.
+        SetForegroundWindow(_messageWindow.Handle);
+        _menu.Show(Cursor.Position);
+        PostMessage(_messageWindow.Handle, WM_NULL, IntPtr.Zero, IntPtr.Zero);
     }
 
     public void Dispose()
     {
+        if (_disposed)
+            return;
+        _disposed = true;
+
+        _icon.MouseClick -= OnMouseClick;
         _icon.Visible = false;
         _icon.Dispose();
+        _menu.Dispose();
+        _iconImage.Dispose();
+        _messageWindow.Dispose();
+    }
+
+    private const uint WM_NULL = 0;
+    private const int WS_EX_TOOLWINDOW = 0x00000080;
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
+
+    private sealed class TrayMessageWindow : NativeWindow, IDisposable
+    {
+        public TrayMessageWindow()
+        {
+            CreateHandle(new CreateParams
+            {
+                Caption = "TaskbarMusic.TrayMenuOwner",
+                ExStyle = WS_EX_TOOLWINDOW,
+            });
+        }
+
+        public void Dispose()
+        {
+            if (Handle != IntPtr.Zero)
+                DestroyHandle();
+        }
     }
 }

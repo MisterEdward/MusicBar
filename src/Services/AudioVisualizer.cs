@@ -5,9 +5,9 @@ namespace TaskbarMusic.Services;
 
 /// <summary>
 /// Captures system audio (WASAPI loopback), runs an FFT, and exposes a small set
-/// of smoothed frequency bands (0..1) plus an overall level. Purely cosmetic, so
-/// it reads/writes the band array without locking. If capture can't start (no
-/// device, etc.) it just produces silence and the UI falls back to an idle wave.
+/// of smoothed frequency bands (0..1) plus an overall level. Capture data is
+/// computed into a private buffer and atomically published to UI readers. If
+/// capture can't start it produces silence and the UI uses its idle wave.
 /// </summary>
 internal sealed class AudioVisualizer : IDisposable
 {
@@ -18,39 +18,169 @@ internal sealed class AudioVisualizer : IDisposable
     private readonly Complex[] _fft = new Complex[FftLen];
     private int _pos;
 
+    private readonly object _lifecycleLock = new();
+    private readonly object _processingLock = new();
     private WasapiLoopbackCapture? _capture;
-    private readonly float[] _bands = new float[BandCount];
+    private float[] _publishedBands = new float[BandCount];
+    private float[] _workingBands = new float[BandCount];
+    private float _level;
+    private int _active;
+    private int _disposed;
+    private long _lifecycleVersion;
 
-    public float[] Bands => _bands;
-    public float Level { get; private set; }
-    public bool Active { get; private set; }
+    // Return a snapshot so callers cannot retain a buffer that the capture
+    // thread will reuse on a later FFT cycle.
+    public float[] Bands
+    {
+        get
+        {
+            lock (_processingLock)
+                return (float[])_publishedBands.Clone();
+        }
+    }
+    public float Level => Volatile.Read(ref _level);
+    public bool Active => Volatile.Read(ref _active) != 0;
 
     public void Start()
     {
-        Stop();
-        try
+        lock (_lifecycleLock)
         {
-            _capture = new WasapiLoopbackCapture();
-            _capture.DataAvailable += OnData;
-            _capture.StartRecording();
-            Active = true;
-        }
-        catch
-        {
-            _capture = null;
-            Active = false;
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            _lifecycleVersion++;
+            StopCore();
+            TryStartCore();
         }
     }
 
     public void Stop()
     {
-        try { _capture?.StopRecording(); } catch { }
-        try { _capture?.Dispose(); } catch { }
-        _capture = null;
-        Active = false;
-        Array.Clear(_bands);
-        Level = 0;
-        _pos = 0;
+        lock (_lifecycleLock)
+        {
+            _lifecycleVersion++;
+            StopCore();
+        }
+    }
+
+    private bool TryStartCore()
+    {
+        WasapiLoopbackCapture? capture = null;
+        try
+        {
+            capture = new WasapiLoopbackCapture();
+            capture.DataAvailable += OnData;
+            capture.RecordingStopped += OnRecordingStopped;
+            Volatile.Write(ref _capture, capture);
+            Volatile.Write(ref _active, 1);
+            capture.StartRecording();
+            return true;
+        }
+        catch
+        {
+            Volatile.Write(ref _capture, null);
+            Volatile.Write(ref _active, 0);
+            if (capture is not null)
+            {
+                capture.DataAvailable -= OnData;
+                capture.RecordingStopped -= OnRecordingStopped;
+                try { capture.Dispose(); } catch { }
+            }
+            return false;
+        }
+    }
+
+    private void StopCore()
+    {
+        var capture = Interlocked.Exchange(ref _capture, null);
+        Volatile.Write(ref _active, 0);
+
+        if (capture is not null)
+        {
+            capture.DataAvailable -= OnData;
+            capture.RecordingStopped -= OnRecordingStopped;
+            try { capture.StopRecording(); } catch { }
+            try { capture.Dispose(); } catch { }
+        }
+
+        // Wait for an in-flight callback to leave before resetting its state.
+        lock (_processingLock)
+        {
+            Array.Clear(_fft);
+            Array.Clear(_publishedBands);
+            Array.Clear(_workingBands);
+            Volatile.Write(ref _level, 0);
+            _pos = 0;
+        }
+    }
+
+    private void OnRecordingStopped(object? sender, StoppedEventArgs e)
+    {
+        if (sender is not WasapiLoopbackCapture capture)
+        {
+            return;
+        }
+
+        long version;
+        lock (_lifecycleLock)
+        {
+            if (!ReferenceEquals(capture, Volatile.Read(ref _capture)))
+                return;
+            capture.DataAvailable -= OnData;
+            Volatile.Write(ref _active, 0);
+            version = _lifecycleVersion;
+
+            // Keep validation and clear atomic against Stop/Start. Unsubscribing
+            // first plus this lock also drains any in-flight final data callback.
+            lock (_processingLock)
+            {
+                Array.Clear(_publishedBands);
+                Array.Clear(_workingBands);
+                Volatile.Write(ref _level, 0);
+            }
+        }
+        if (e.Exception is not null)
+            App.LogException("AudioVisualizer capture stopped", e.Exception);
+
+        // Device switches and driver resets stop WASAPI without changing media
+        // state, so MainWindow would otherwise never call Start again. Retry only
+        // if this exact capture is still current; an idle Stop invalidates it.
+        _ = RestartAfterFailureAsync(capture, version);
+    }
+
+    private async Task RestartAfterFailureAsync(
+        WasapiLoopbackCapture failedCapture,
+        long expectedVersion)
+    {
+        try
+        {
+            const int attempts = 5;
+            for (int attempt = 0; attempt < attempts; attempt++)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1 + attempt));
+                lock (_lifecycleLock)
+                {
+                    if (_disposed != 0 || expectedVersion != _lifecycleVersion)
+                        return;
+
+                    if (attempt == 0)
+                    {
+                        if (!ReferenceEquals(failedCapture, Volatile.Read(ref _capture)))
+                            return;
+                        StopCore();
+                    }
+                    else if (Volatile.Read(ref _capture) is not null)
+                    {
+                        return;
+                    }
+
+                    if (TryStartCore())
+                        return;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            App.LogException("AudioVisualizer capture restart", ex);
+        }
     }
 
     private void OnData(object? sender, WaveInEventArgs e)
@@ -58,26 +188,35 @@ internal sealed class AudioVisualizer : IDisposable
         // Runs on NAudio's capture thread. A stale callback from a session we've
         // already Stop()ped must not touch the shared FFT buffers, and ANY throw
         // here is an unrecoverable AppDomain crash — so guard + swallow (+ log).
-        if (!ReferenceEquals(sender, _capture)) return;
-        var fmt = _capture?.WaveFormat;
-        if (fmt is null) return;
+        if (sender is not WasapiLoopbackCapture capture
+            || !ReferenceEquals(capture, Volatile.Read(ref _capture)))
+            return;
 
         try
         {
-            int bytesPerSample = fmt.BitsPerSample / 8;
-            int channels = Math.Max(1, fmt.Channels);
-            int frame = bytesPerSample * channels;
-            if (frame == 0) return;
-
-            for (int i = 0; i + frame <= e.BytesRecorded; i += frame)
+            lock (_processingLock)
             {
-                float sample = fmt.Encoding == WaveFormatEncoding.IeeeFloat
-                    ? BitConverter.ToSingle(e.Buffer, i)
-                    : bytesPerSample == 2 ? BitConverter.ToInt16(e.Buffer, i) / 32768f : 0f;
+                // Stop/Start may have happened while this callback waited.
+                if (!ReferenceEquals(capture, Volatile.Read(ref _capture))) return;
 
-                _fft[_pos].X = (float)(sample * Hann(_pos, FftLen));
-                _fft[_pos].Y = 0;
-                if (++_pos >= FftLen) { _pos = 0; Compute(); }
+                var fmt = capture.WaveFormat;
+                int bytesPerSample = fmt.BitsPerSample / 8;
+                int channels = Math.Max(1, fmt.Channels);
+                int frame = bytesPerSample * channels;
+                if (frame == 0) return;
+
+                for (int i = 0; i + frame <= e.BytesRecorded; i += frame)
+                {
+                    float sample = fmt.Encoding == WaveFormatEncoding.IeeeFloat
+                        ? BitConverter.ToSingle(e.Buffer, i)
+                        : bytesPerSample == 2
+                            ? BitConverter.ToInt16(e.Buffer, i) / 32768f
+                            : 0f;
+
+                    _fft[_pos].X = (float)(sample * Hann(_pos, FftLen));
+                    _fft[_pos].Y = 0;
+                    if (++_pos >= FftLen) { _pos = 0; Compute(); }
+                }
             }
         }
         catch (Exception ex)
@@ -90,6 +229,8 @@ internal sealed class AudioVisualizer : IDisposable
     {
         FastFourierTransform.FFT(true, M, _fft);
 
+        var previous = Volatile.Read(ref _publishedBands);
+        var next = _workingBands;
         int bins = FftLen / 2;
         float overall = 0;
         for (int b = 0; b < BandCount; b++)
@@ -108,13 +249,24 @@ internal sealed class AudioVisualizer : IDisposable
             float v = Math.Clamp(MathF.Log10(1 + avg * 40f), 0, 1);
 
             // Attack fast, decay slow — looks musical.
-            _bands[b] = v > _bands[b] ? v : _bands[b] * 0.80f + v * 0.20f;
-            overall += _bands[b];
+            next[b] = v > previous[b] ? v : previous[b] * 0.80f + v * 0.20f;
+            overall += next[b];
         }
-        Level = Math.Clamp(overall / BandCount * 2.2f, 0, 1);
+
+        Volatile.Write(ref _publishedBands, next);
+        _workingBands = previous;
+        Volatile.Write(ref _level, Math.Clamp(overall / BandCount * 2.2f, 0, 1));
     }
 
     private static double Hann(int n, int len) => 0.5 * (1 - Math.Cos(2 * Math.PI * n / (len - 1)));
 
-    public void Dispose() => Stop();
+    public void Dispose()
+    {
+        lock (_lifecycleLock)
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            _lifecycleVersion++;
+            StopCore();
+        }
+    }
 }

@@ -24,6 +24,7 @@ public partial class MainWindow : Window
     private MediaService? _media;
     private GlobalScrollHook? _scrollHook;
     private TrayIconService? _tray;
+    private HwndSource? _hwndSource;
 
     private readonly DispatcherTimer _volumeHide;
     private readonly DispatcherTimer _saveDebounce;
@@ -31,6 +32,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _fsWatch;
     private bool _isIdle = true;
     private bool _fsHidden;    // hidden because a fullscreen app is on our monitor
+    private bool _cleanedUp;
 
     // Audio-reactive dot-field background + morphing idle indicator.
     private readonly DotFieldVisualizer _viz = new();
@@ -50,9 +52,13 @@ public partial class MainWindow : Window
 
     // Manual drag state (replaces DragMove — see notes in OnPillMouseDown).
     private bool _dragging;
-    private int _dragStartCursorX;
-    private double _dragStartLeft;
-    private double _dragDip = 1;      // physical px -> DIP factor
+    private int _dragLastCursorX;
+    private int _dragLastCursorY;
+    private double _dragProposedLeft;
+    private double _dragProposedTop;
+    private double _dragDipX = 1;      // physical px -> DIP factors
+    private double _dragDipY = 1;
+    private TaskbarEdge _taskbarEdge = TaskbarEdge.Bottom;
     private double _fsStreak;         // consecutive fullscreen readings (debounce)
     private bool _fsCandidate;
 
@@ -94,7 +100,7 @@ public partial class MainWindow : Window
         MenuStartup.IsChecked = StartupService.IsEnabled();
         StartupService.RefreshIfEnabled(); // fix the path if the .exe was moved
 
-        // Manual, horizontal-only drag (see OnPillMouseDown for why not DragMove).
+        // Manual, taskbar-axis drag (see OnPillMouseDown for why not DragMove).
         Pill.PreviewMouseLeftButtonDown += OnPillMouseDown;
         Pill.PreviewMouseMove += OnPillMouseMove;
         Pill.PreviewMouseLeftButtonUp += OnPillMouseUp;
@@ -136,46 +142,83 @@ public partial class MainWindow : Window
     /// <summary>Pick the anchor edge from which monitor-half the pill sits on.</summary>
     private void UpdateAnchor()
     {
-        var src = PresentationSource.FromVisual(this);
-        if (src?.CompositionTarget is null) return;
-
         var c = Pill.PointToScreen(new Point(Pill.ActualWidth / 2, Pill.ActualHeight / 2));
         var pt = new NativeMethods.POINT { X = (int)c.X, Y = (int)c.Y };
         var hMon = NativeMethods.MonitorFromPoint(pt, NativeMethods.MONITOR_DEFAULTTONEAREST);
         var mi = new NativeMethods.MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.MONITORINFO>() };
         if (!NativeMethods.GetMonitorInfo(hMon, ref mi)) return;
 
-        double toDip = src.CompositionTarget.TransformFromDevice.M11;
-        double monCenterDip = (mi.rcMonitor.Left + mi.rcMonitor.Right) / 2.0 * toDip;
-        double pillCenter = Left + ActualWidth / 2;
-
-        _anchorSide = pillCenter < monCenterDip ? AnchorSide.Left : AnchorSide.Right;
+        double monitorCenterPx = (mi.rcMonitor.Left + mi.rcMonitor.Right) / 2.0;
+        _anchorSide = c.X < monitorCenterPx ? AnchorSide.Left : AnchorSide.Right;
         _anchorX = _anchorSide == AnchorSide.Left ? Left : Left + ActualWidth;
     }
 
-    /// <summary>Pin the pill's vertical centre to the taskbar of the monitor it's over.</summary>
+    /// <summary>Pin the pill to the taskbar edge of the monitor it's over.</summary>
     private void SnapToTaskbar()
     {
         if (!_placed || _fsHidden || !IsVisible || _dragging) return;
         var src = PresentationSource.FromVisual(this);
         if (src?.CompositionTarget is null) return;
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero || !NativeMethods.GetWindowRect(hwnd, out var windowRect)) return;
 
         var center = Pill.PointToScreen(new Point(Pill.ActualWidth / 2, Pill.ActualHeight / 2));
         var pt = new NativeMethods.POINT { X = (int)center.X, Y = (int)center.Y };
-        if (!TaskbarHelper.TryGetTaskbar(pt, out var strip)) return;
+        if (!TaskbarHelper.TryGetTaskbar(pt, out var taskbar)) return;
+        _taskbarEdge = taskbar.Edge;
 
-        double toDip = src.CompositionTarget.TransformFromDevice.M22; // device px -> DIP
-        double tbHeightDip = (strip.Bottom - strip.Top) * toDip;
+        var fromDevice = src.CompositionTarget.TransformFromDevice;
+        bool vertical = taskbar.Edge is TaskbarEdge.Left or TaskbarEdge.Right;
+        int thicknessPx = vertical ? taskbar.Bounds.Width : taskbar.Bounds.Height;
+        double thicknessDip = thicknessPx * (vertical ? fromDevice.M11 : fromDevice.M22);
 
         // Fit inside the taskbar, a touch smaller so it reads as part of it.
-        double desiredH = Math.Clamp(tbHeightDip - 8, 34, 60);
+        double desiredH = Math.Clamp(thicknessDip - 8, 34, 60);
         ApplyPillHeight(desiredH);
 
-        double centerYDip = ((strip.Top + strip.Bottom) / 2.0) * toDip;
-        double newTop = centerYDip - desiredH / 2; // window height == pill height (no margin)
-        if (Math.Abs(newTop - Top) > 0.5)
+        // Convert absolute pixels relative to the current HWND. Multiplying an
+        // absolute desktop coordinate by one scale is wrong when monitors have
+        // different DPI values or negative origins.
+        double ToDipX(double screenX) => DpiCoordinates.ScreenPixelToDip(
+            screenX, windowRect.Left, Left, fromDevice.M11);
+        double ToDipY(double screenY) => DpiCoordinates.ScreenPixelToDip(
+            screenY, windowRect.Top, Top, fromDevice.M22);
+
+        double newLeft = Left;
+        double newTop;
+        if (!vertical)
+        {
+            double centerY = (taskbar.Bounds.Top + taskbar.Bounds.Bottom) / 2.0;
+            newTop = ToDipY(centerY) - desiredH / 2;
+        }
+        else
+        {
+            double minTop = ToDipY(taskbar.Bounds.Top + 4);
+            // SizeToContent applies ActualHeight on the next layout pass.
+            // Use the requested height now so a bottom-positioned pill cannot
+            // spill after a DPI/taskbar-thickness change.
+            double maxTop = ToDipY(taskbar.Bounds.Bottom - 4) - desiredH;
+            newTop = maxTop < minTop ? minTop : Math.Clamp(Top, minTop, maxTop);
+
+            if (taskbar.Edge == TaskbarEdge.Left)
+            {
+                newLeft = ToDipX(taskbar.Bounds.Left + 4);
+                _anchorSide = AnchorSide.Left;
+                _anchorX = newLeft;
+            }
+            else
+            {
+                double right = ToDipX(taskbar.Bounds.Right - 4);
+                newLeft = right - ActualWidth;
+                _anchorSide = AnchorSide.Right;
+                _anchorX = right;
+            }
+        }
+
+        if (Math.Abs(newTop - Top) > 0.5 || Math.Abs(newLeft - Left) > 0.5)
         {
             _adjusting = true;
+            Left = newLeft;
             Top = newTop;
             _adjusting = false;
         }
@@ -200,14 +243,63 @@ public partial class MainWindow : Window
 
     private double ClampLeft(double left)
     {
-        double min = SystemParameters.VirtualScreenLeft + 4;
-        double max = SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth - ActualWidth - 4;
+        var src = PresentationSource.FromVisual(this);
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (src?.CompositionTarget is null || hwnd == IntPtr.Zero ||
+            !NativeMethods.GetWindowRect(hwnd, out var windowRect))
+        {
+            double fallbackMin = SystemParameters.VirtualScreenLeft + 4;
+            double fallbackMax = fallbackMin + SystemParameters.VirtualScreenWidth - ActualWidth - 8;
+            return fallbackMax < fallbackMin
+                ? fallbackMin
+                : Math.Clamp(left, fallbackMin, fallbackMax);
+        }
+
+        int virtualLeftPx = NativeMethods.GetSystemMetrics(NativeMethods.SM_XVIRTUALSCREEN);
+        int virtualWidthPx = NativeMethods.GetSystemMetrics(NativeMethods.SM_CXVIRTUALSCREEN);
+        int windowWidthPx = Math.Max(1, windowRect.Right - windowRect.Left);
+        double toDip = src.CompositionTarget.TransformFromDevice.M11;
+        double min = DpiCoordinates.ScreenPixelToDip(
+            virtualLeftPx + 4, windowRect.Left, Left, toDip);
+        double max = DpiCoordinates.ScreenPixelToDip(
+            virtualLeftPx + virtualWidthPx - windowWidthPx - 4,
+            windowRect.Left, Left, toDip);
         return max < min ? min : Math.Max(min, Math.Min(left, max));
+    }
+
+    private double ClampTop(double top)
+    {
+        var src = PresentationSource.FromVisual(this);
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (src?.CompositionTarget is null || hwnd == IntPtr.Zero ||
+            !NativeMethods.GetWindowRect(hwnd, out var windowRect))
+        {
+            double fallbackMin = SystemParameters.VirtualScreenTop + 4;
+            double fallbackMax = fallbackMin + SystemParameters.VirtualScreenHeight - ActualHeight - 8;
+            return fallbackMax < fallbackMin
+                ? fallbackMin
+                : Math.Clamp(top, fallbackMin, fallbackMax);
+        }
+
+        int virtualTopPx = NativeMethods.GetSystemMetrics(NativeMethods.SM_YVIRTUALSCREEN);
+        int virtualHeightPx = NativeMethods.GetSystemMetrics(NativeMethods.SM_CYVIRTUALSCREEN);
+        int windowHeightPx = Math.Max(1, windowRect.Bottom - windowRect.Top);
+        double toDip = src.CompositionTarget.TransformFromDevice.M22;
+        double min = DpiCoordinates.ScreenPixelToDip(
+            virtualTopPx + 4, windowRect.Top, Top, toDip);
+        double max = DpiCoordinates.ScreenPixelToDip(
+            virtualTopPx + virtualHeightPx - windowHeightPx - 4,
+            windowRect.Top, Top, toDip);
+        return max < min ? min : Math.Max(min, Math.Min(top, max));
     }
 
     protected override async void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        _hwndSource = HwndSource.FromHwnd(hwnd);
+        _hwndSource?.AddHook(OnWindowMessage);
 
         WindowChromeHelper.MakeOverlay(this);
         ApplyTheme(ThemeWatcher.IsLightTheme());
@@ -222,7 +314,7 @@ public partial class MainWindow : Window
         //     ThemeWatcher.IsLightTheme() ? Color.FromRgb(0xF3,0xF3,0xF3) : Color.FromRgb(0x2A,0x2A,0x2A), 0x99);
 
         // Hover-scroll volume, works even when we're not the focused window.
-        _scrollHook = new GlobalScrollHook(this, OnVolumeScroll);
+        _scrollHook = new GlobalScrollHook(this, Pill, OnVolumeScroll);
         _scrollHook.Install();
 
         // Keep it above everything.
@@ -254,6 +346,53 @@ public partial class MainWindow : Window
         {
             // SMTC not available (very old Windows) — stay idle.
         }
+    }
+
+    private IntPtr OnWindowMessage(
+        IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (message is NativeMethods.WM_DPICHANGED or
+            NativeMethods.WM_DISPLAYCHANGE or NativeMethods.WM_SETTINGCHANGE)
+        {
+            bool displayChanged = message == NativeMethods.WM_DISPLAYCHANGE;
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
+            {
+                if (!_placed || !IsLoaded) return;
+
+                if (displayChanged)
+                {
+                    var center = Pill.PointToScreen(
+                        new Point(Pill.ActualWidth / 2, Pill.ActualHeight / 2));
+                    var point = new NativeMethods.POINT
+                    {
+                        X = (int)Math.Round(center.X),
+                        Y = (int)Math.Round(center.Y),
+                    };
+                    if (NativeMethods.MonitorFromPoint(
+                        point, NativeMethods.MONITOR_DEFAULTTONULL) == IntPtr.Zero)
+                    {
+                        PlaceWindow();
+                    }
+                }
+
+                UpdateAnchor();
+                SnapToTaskbar();
+                ClipToMonitor();
+            });
+        }
+
+        return IntPtr.Zero;
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        if (_hwndSource is not null)
+        {
+            _hwndSource.RemoveHook(OnWindowMessage);
+            _hwndSource = null;
+        }
+        Cleanup();
+        base.OnClosed(e);
     }
 
     // ======================================================================
@@ -342,6 +481,7 @@ public partial class MainWindow : Window
     private void HideForFullscreen(bool hide)
     {
         _fsHidden = hide;
+        if (_scrollHook is not null) _scrollHook.IsEnabled = !hide;
         var scale = TimeSpan.FromMilliseconds(hide ? 340 : 440);
 
         if (hide)
@@ -358,9 +498,9 @@ public partial class MainWindow : Window
         else
         {
             Show();
+            _cat.Show(); // keep the transparent host ready for the next play→idle visit
             WindowChromeHelper.ReassertTopmost(this);
             SnapToTaskbar();
-            if (_isIdle && _settings.CatEnabled) { _cat.Show(); _cat.StartIdle(GetPillScreenRectDip); }
 
             BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(360)));
             var s = new DoubleAnimation(1, scale) { EasingFunction = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.3 } };
@@ -410,6 +550,7 @@ public partial class MainWindow : Window
     private void SetIdle(bool idle, bool animate = true)
     {
         if (idle == _isIdle && animate) return;
+        bool wasIdle = _isIdle;
         _isIdle = idle;
 
         var fade = TimeSpan.FromMilliseconds(220);
@@ -427,24 +568,53 @@ public partial class MainWindow : Window
         if (idle) { _audio.Stop(); FadeViz(false); }
         else { _audio.Start(); FadeViz(true); }
 
-        if (_settings.CatEnabled)
-        {
-            if (idle) _cat.StartIdle(GetPillScreenRectDip);
-            else _cat.StopIdle();
-        }
+        if (!idle)
+            _cat.StopIdle();
+        else if (!wasIdle && _settings.CatEnabled)
+            _cat.StartIdle(GetPillScreenAnchor);
     }
 
-    /// <summary>Pill rectangle in DIP screen coordinates, for cat placement.</summary>
-    private Rect GetPillScreenRectDip()
+    /// <summary>
+    /// Pill and monitor geometry in physical pixels. The cat is a different
+    /// per-monitor-aware HWND, so exchanging WPF DIPs between the windows would
+    /// be wrong when they currently have different DPI scales.
+    /// </summary>
+    private CatAnchor? GetPillScreenAnchor()
     {
-        // Check the source BEFORE PointToScreen: this delegate is invoked later
-        // by the cat, possibly after the window's HwndSource is gone.
-        var src = PresentationSource.FromVisual(this);
-        if (src?.CompositionTarget is null) return Rect.Empty;
-        var tl = Pill.PointToScreen(new Point(0, 0));
-        double sx = src.CompositionTarget.TransformToDevice.M11;
-        double sy = src.CompositionTarget.TransformToDevice.M22;
-        return new Rect(tl.X / sx, tl.Y / sy, Pill.ActualWidth, Pill.ActualHeight);
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero || !NativeMethods.GetWindowRect(hwnd, out var windowRect))
+            return null;
+
+        var topLeft = Pill.PointToScreen(new Point(0, 0));
+        var bottomRight = Pill.PointToScreen(
+            new Point(Pill.ActualWidth, Pill.ActualHeight));
+        var pill = new PixelRect(
+            (int)Math.Floor(topLeft.X),
+            (int)Math.Floor(topLeft.Y),
+            (int)Math.Ceiling(bottomRight.X),
+            (int)Math.Ceiling(bottomRight.Y));
+        var center = new NativeMethods.POINT
+        {
+            X = pill.Left + pill.Width / 2,
+            Y = pill.Top + pill.Height / 2,
+        };
+        IntPtr monitor = NativeMethods.MonitorFromPoint(
+            center, NativeMethods.MONITOR_DEFAULTTONEAREST);
+        var info = new NativeMethods.MONITORINFO
+        {
+            cbSize = System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.MONITORINFO>(),
+        };
+        if (!pill.IsValid || !NativeMethods.GetMonitorInfo(monitor, ref info))
+            return null;
+
+        uint dpi = NativeMethods.GetDpiForWindow(hwnd);
+        if (dpi == 0) dpi = 96;
+        return new CatAnchor(
+            pill,
+            new PixelRect(
+                info.rcMonitor.Left, info.rcMonitor.Top,
+                info.rcMonitor.Right, info.rcMonitor.Bottom),
+            dpi);
     }
 
     // ======================================================================
@@ -476,8 +646,8 @@ public partial class MainWindow : Window
     //  Transport buttons
     // ======================================================================
 
-    private async void OnPrev(object s, RoutedEventArgs e)      { if (_media != null) await _media.PreviousAsync(); }
-    private async void OnNext(object s, RoutedEventArgs e)      { if (_media != null) await _media.NextAsync(); }
+    private async void OnPrev(object s, RoutedEventArgs e) { if (_media != null) await _media.PreviousAsync(); }
+    private async void OnNext(object s, RoutedEventArgs e) { if (_media != null) await _media.NextAsync(); }
     private async void OnPlayPause(object s, RoutedEventArgs e) { if (_media != null) await _media.TogglePlayPauseAsync(); }
 
     // ======================================================================
@@ -486,9 +656,8 @@ public partial class MainWindow : Window
 
     // Manual drag instead of Window.DragMove(): DragMove runs a modal OS move
     // loop that fires LocationChanged in a storm; combined with SnapToTaskbar it
-    // re-entered layout and crashed. This moves the window on X only (Y is owned
-    // by SnapToTaskbar) using the absolute cursor position, so it's smooth and
-    // DPI-stable and never touches layout per move.
+    // re-entered layout and crashed. This moves along the taskbar's long axis
+    // using the absolute cursor position, so it is smooth and DPI-stable.
     private void OnPillMouseDown(object sender, MouseButtonEventArgs e)
     {
         if (_settings.Locked) return;
@@ -496,9 +665,12 @@ public partial class MainWindow : Window
         if (!NativeMethods.GetCursorPos(out var p)) return;
 
         var src = PresentationSource.FromVisual(this);
-        _dragDip = src?.CompositionTarget?.TransformFromDevice.M11 ?? 1;
-        _dragStartCursorX = p.X;
-        _dragStartLeft = Left;
+        _dragDipX = src?.CompositionTarget?.TransformFromDevice.M11 ?? 1;
+        _dragDipY = src?.CompositionTarget?.TransformFromDevice.M22 ?? 1;
+        _dragLastCursorX = p.X;
+        _dragLastCursorY = p.Y;
+        _dragProposedLeft = Left;
+        _dragProposedTop = Top;
         _fsWatch.Stop();          // don't let auto-hide steal capture mid-drag
         _dragging = Pill.CaptureMouse(); // if capture fails, don't get stuck "dragging"
         if (!_dragging) _fsWatch.Start();
@@ -511,11 +683,26 @@ public partial class MainWindow : Window
 
         // Refresh the px->DIP factor in case we crossed into a different-DPI monitor.
         var src = PresentationSource.FromVisual(this);
-        if (src?.CompositionTarget != null) _dragDip = src.CompositionTarget.TransformFromDevice.M11;
+        if (src?.CompositionTarget != null)
+        {
+            _dragDipX = src.CompositionTarget.TransformFromDevice.M11;
+            _dragDipY = src.CompositionTarget.TransformFromDevice.M22;
+        }
 
-        double newLeft = _dragStartLeft + (p.X - _dragStartCursorX) * _dragDip;
-        newLeft = ApplyMonitorResistance(newLeft);
-        Left = ClampLeft(newLeft); // X only; Y stays put
+        // Apply incremental deltas. Re-scaling the entire drag distance with the
+        // destination monitor's DPI causes a jump when crossing a mixed-DPI seam.
+        if (_taskbarEdge is TaskbarEdge.Left or TaskbarEdge.Right)
+        {
+            _dragProposedTop += (p.Y - _dragLastCursorY) * _dragDipY;
+            _dragLastCursorY = p.Y;
+            Top = ClampTop(ApplyVerticalMonitorResistance(_dragProposedTop));
+        }
+        else
+        {
+            _dragProposedLeft += (p.X - _dragLastCursorX) * _dragDipX;
+            _dragLastCursorX = p.X;
+            Left = ClampLeft(ApplyMonitorResistance(_dragProposedLeft));
+        }
         ClipToMonitor();           // cull the part that spilled onto another monitor
     }
 
@@ -559,6 +746,28 @@ public partial class MainWindow : Window
         return proposedLeft;
     }
 
+    private double ApplyVerticalMonitorResistance(double proposedTop)
+    {
+        const double resist = 85;
+        if (!TryGetMonitorDip(out _, out _, out double monT, out double monB))
+            return proposedTop;
+
+        double height = ActualHeight;
+        if (monB - monT <= height) return proposedTop;
+
+        if (proposedTop < monT)
+        {
+            double over = monT - proposedTop;
+            return over < resist ? monT : proposedTop + resist;
+        }
+        if (proposedTop + height > monB)
+        {
+            double over = proposedTop + height - monB;
+            return over < resist ? monB - height : proposedTop - resist;
+        }
+        return proposedTop;
+    }
+
     /// <summary>Monitor rect (DIP) under the pill's centre. False if unavailable.</summary>
     private bool TryGetMonitorDip(out double left, out double right, out double top, out double bottom)
     {
@@ -571,11 +780,15 @@ public partial class MainWindow : Window
         var hMon = NativeMethods.MonitorFromPoint(pt, NativeMethods.MONITOR_DEFAULTTONEAREST);
         var mi = new NativeMethods.MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.MONITORINFO>() };
         if (!NativeMethods.GetMonitorInfo(hMon, ref mi)) return false;
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero || !NativeMethods.GetWindowRect(hwnd, out var windowRect)) return false;
 
         double dx = src.CompositionTarget.TransformFromDevice.M11;
         double dy = src.CompositionTarget.TransformFromDevice.M22;
-        left = mi.rcMonitor.Left * dx; right = mi.rcMonitor.Right * dx;
-        top = mi.rcMonitor.Top * dy; bottom = mi.rcMonitor.Bottom * dy;
+        left = DpiCoordinates.ScreenPixelToDip(mi.rcMonitor.Left, windowRect.Left, Left, dx);
+        right = DpiCoordinates.ScreenPixelToDip(mi.rcMonitor.Right, windowRect.Left, Left, dx);
+        top = DpiCoordinates.ScreenPixelToDip(mi.rcMonitor.Top, windowRect.Top, Top, dy);
+        bottom = DpiCoordinates.ScreenPixelToDip(mi.rcMonitor.Bottom, windowRect.Top, Top, dy);
         return true;
     }
 
@@ -625,24 +838,31 @@ public partial class MainWindow : Window
     private void PlaceWindow()
     {
         var wa = SystemParameters.WorkArea;
-        if (!double.IsNaN(_settings.Left) && !double.IsNaN(_settings.Top) && OnAnyScreen(_settings.Left, _settings.Top))
+        if (double.IsFinite(_settings.Left) && double.IsFinite(_settings.Top))
         {
             Left = _settings.Left;
             Top = _settings.Top;
+            if (OnAnyScreen()) return;
         }
-        else
-        {
-            // Default: bottom-right, just above the taskbar area.
-            Left = wa.Right - ActualWidth - 12;
-            Top = wa.Bottom - ActualHeight - 8;
-        }
+
+        // Default: bottom-right, just above the taskbar area.
+        Left = wa.Right - ActualWidth - 12;
+        Top = wa.Bottom - ActualHeight - 8;
     }
 
     // Reject a saved position that no longer lands on a real monitor (unplugged
     // display, changed layout) so the pill can't be lost off-screen.
-    private static bool OnAnyScreen(double left, double top)
+    private bool OnAnyScreen()
     {
-        var pt = new NativeMethods.POINT { X = (int)(left + 20), Y = (int)(top + 20) };
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero || !NativeMethods.GetWindowRect(hwnd, out var rect))
+            return false;
+
+        var pt = new NativeMethods.POINT
+        {
+            X = rect.Left + Math.Min(20, Math.Max(1, rect.Right - rect.Left - 1)),
+            Y = rect.Top + Math.Min(20, Math.Max(1, rect.Bottom - rect.Top - 1)),
+        };
         return NativeMethods.MonitorFromPoint(pt, NativeMethods.MONITOR_DEFAULTTONULL) != IntPtr.Zero;
     }
 
@@ -658,21 +878,7 @@ public partial class MainWindow : Window
     // ======================================================================
 
     private void ApplyTheme(bool light)
-    {
-        void Set(string key, Color c) => Resources[key] = new SolidColorBrush(c);
-
-        if (light)
-        {
-            Set("GlassBrush",    Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF));
-            Set("StrokeBrush",   Color.FromArgb(0x22, 0x00, 0x00, 0x00));
-            Set("TextPrimary",   Color.FromRgb(0x10, 0x10, 0x10));
-            Set("TextSecondary", Color.FromArgb(0xB0, 0x10, 0x10, 0x10));
-            Set("IconHover",     Color.FromArgb(0x14, 0x00, 0x00, 0x00));
-            Set("IconPressed",   Color.FromArgb(0x28, 0x00, 0x00, 0x00));
-            Set("AccentBrush",   Color.FromRgb(0x00, 0x67, 0xC0));
-        }
-        // Dark defaults already live in App.xaml.
-    }
+        => ThemeWatcher.ApplyResources(Resources, light);
 
     // ======================================================================
     //  Context menu
@@ -703,7 +909,6 @@ public partial class MainWindow : Window
         _settings.CatEnabled = !_settings.CatEnabled;
         SettingsService.Save(_settings);
         if (!_settings.CatEnabled) _cat.StopIdle();
-        else if (_isIdle) _cat.StartIdle(GetPillScreenRectDip);
         SyncMenus();
     }
 
@@ -728,7 +933,16 @@ public partial class MainWindow : Window
 
     private void ExitApp()
     {
-        PersistPosition();
+        Cleanup();
+        Application.Current.Shutdown();
+    }
+
+    private void Cleanup()
+    {
+        if (_cleanedUp) return;
+        _cleanedUp = true;
+
+        if (_placed) PersistPosition();
         _topmost.Stop();
         _fsWatch.Stop();
         _volumeHide.Stop();
@@ -736,10 +950,13 @@ public partial class MainWindow : Window
         CompositionTarget.Rendering -= OnRendering;
         _cat.StopIdle();          // stop before the window it depends on goes away
         _tray?.Dispose();
+        _tray = null;
         _scrollHook?.Dispose();
+        _scrollHook = null;
+        if (_media is not null) _media.Changed -= OnMediaChanged;
         _media?.Dispose();
+        _media = null;
         _audio.Dispose();
         _volume.Dispose();
-        Application.Current.Shutdown();
     }
 }

@@ -1,11 +1,10 @@
 # Taskbar Music 🎵
 
-A tiny Windows 11 floating music indicator — a Fluent-style "pill" that shows what's
-playing (album art · **Title • Artist** · transport buttons), lets you **scroll to
-change system volume while hovering** (even when it isn't the focused window), can be
-**dragged onto any monitor**, and **scales smoothly** ("liquid glass") when the track
-changes. When nothing is playing it **collapses to a small dot** and, every so often, a
-little **cat slides in from off-screen** to do something silly. 🐱
+A tiny Windows music indicator: a Fluent-style pill that shows what's playing
+(album art · **Title • Artist** · transport buttons), changes volume by scrolling
+while hovered, docks to the taskbar on any monitor, and hides for real fullscreen
+apps. When playback ends it collapses into a compact motion-branding mark; after
+30 seconds, a geometric vector cat can make one short visit. 🐱
 
 Inspired by the look of FluentFlyout, built from scratch in **C# / WPF (.NET 8)**.
 
@@ -23,14 +22,15 @@ Inspired by the look of FluentFlyout, built from scratch in **C# / WPF (.NET 8)*
 |---|---|
 | Hover + **scroll → system volume** | System-wide low-level mouse hook (`WH_MOUSE_LL`) so it works even when the widget isn't focused / on another monitor. A hairline volume bar + % flashes on the pill. |
 | Works **without the window active** | The window is `WS_EX_NOACTIVATE` (never steals focus) and the scroll hook is global. |
-| **Taskbar-locked, drag onto any monitor** | Drag the pill left/right; its vertical centre stays pinned to the taskbar centre (any taskbar height, any monitor — computed from monitor bounds minus work area). Horizontal position is remembered. |
+| **Taskbar-locked, drag onto any monitor** | Detects primary/secondary taskbar windows, every edge, auto-hide, display changes, and mixed-DPI origins. Drag follows the taskbar's long axis: horizontal on Top/Bottom, vertical on Left/Right. |
 | **Living background** | The pill's background is an audio-reactive halftone dot-field + sparkles (à la the Gemini prompt box) — palette-tinted, brightest in the centre, faded at the corners, pulsing with the music. Not bars. Real system audio via WASAPI loopback + FFT (drives brightness/size), with a gentle idle shimmer if capture is unavailable. |
-| **Smooth scaling** on track change | The pill width animates with a slight overshoot (`BackEase`) and re-centres each frame, plus a tiny "settle" scale pop. |
+| **Smooth scaling** on track change | The pill width animates with a slight overshoot while preserving its nearest screen-side anchor. |
 | **Colour from album art + random** | A vibrant dominant colour is extracted from the cover and paired with a fresh random accent hue each track; that palette drives the dot-field + corner glow. |
 | **Any media, Apple Music prioritised** | Uses Windows' System Media Transport Controls (SMTC). Session scoring prefers Apple Music / iTunes > other known players > whatever is actually playing. |
-| **Fluent / native look** | Rounded translucent "glass card", Segoe UI Variable text, Segoe Fluent Icons transport glyphs, light/dark following the Windows app theme. |
+| **Fluent / native look** | Rounded translucent surface, Segoe UI Variable text, Segoe Fluent Icons, and live light/dark theme updates. |
 | Album art + **◀ ⏯ ▶** on the right, **Title • Artist** centred | See `MainWindow.xaml`. |
-| Idle → **dot + cat** | Collapses to a dot; a vector cat (no copyright baggage) occasionally slides in to sleep/play. Toggleable. |
+| Idle → **motion mark + cat** | Reference-driven, fast shape morphs replace the old rotating cartoon forms. The redesigned vector cat appears once per play→stop transition. Toggleable. |
+| **Crash/race hardening** | Versioned SMTC updates, synchronized WASAPI buffers, atomic settings writes, complete event cleanup, and app-wide crash logs. |
 
 ---
 
@@ -81,20 +81,20 @@ Windows 11.
 - **Move it:** click-drag the pill (anywhere except the buttons) to any monitor.
 - **Transport:** ◀ previous · ⏯ play/pause · ▶ next (right side).
 - **Right-click the pill** for the menu: **Start with Windows** (toggle), toggle the idle
-  **cat**, **reset position**, **exit**. (There's no taskbar button or tray icon by design —
-  right-click → Exit is how you quit.)
+  **cat**, lock/reset its position, or exit.
+- The **tray icon** exposes the same safety menu. Left- and right-click both work.
 
 ### Start with Windows
 
 Right-click the pill → **Start with Windows**. This writes a per-user `Run` registry entry
 (no admin needed) and self-heals the path if you move the .exe. Toggle it off the same way.
 
-## Prebuilt .exe
+## Prebuilt executables
 
-A ready-to-run, self-contained `dist/TaskbarMusic.exe` (~75 MB, no .NET install required) is
-included — copy it to your Windows 11 PC and double-click. If you'd rather have a tiny (~2 MB)
-build, install the **.NET 8 Desktop Runtime** and publish framework-dependent
-(`--self-contained false`).
+Self-contained x64 and ARM64 executables are published under
+[GitHub Releases](https://github.com/MisterEdward/MusicBar/releases). They are
+not committed to the repository. Framework-dependent builds are much smaller,
+but require the .NET 8 Desktop Runtime.
 
 ---
 
@@ -107,13 +107,19 @@ src/
 ├─ CatWindow.xaml / .cs      The click-through idle cat overlay + its animations
 ├─ Services/
 │  ├─ MediaService.cs        SMTC wrapper (session picking, art, transport)
+│  ├─ AudioVisualizer.cs     synchronized WASAPI capture + FFT
 │  ├─ VolumeService.cs       Core Audio master volume (NAudio)
-│  └─ SettingsService.cs     JSON settings in %AppData%\TaskbarMusic
+│  ├─ SettingsService.cs     validated atomic JSON settings
+│  └─ TrayIconService.cs     tray icon and public-API menu ownership
 └─ Interop/
    ├─ NativeMethods.cs       P/Invoke surface
-   ├─ WindowChromeHelper.cs  no-activate / tool-window / rounded / (optional) acrylic
+   ├─ ScreenGeometry.cs      pure/tested taskbar, DPI and hit-test maths
+   ├─ TaskbarHelper.cs       taskbar window and edge discovery
    ├─ GlobalScrollHook.cs    system-wide wheel hook for hover-volume
-   └─ ThemeWatcher.cs        light/dark from the registry
+   ├─ FullscreenDetector.cs  fullscreen filtering and geometry
+   └─ ThemeWatcher.cs        live light/dark updates
+tests/
+└─ TaskbarMusic.Tests/       cross-platform unit tests for pure logic
 ```
 
 ---
@@ -136,3 +142,20 @@ src/
 - True acrylic is opt-in (see above).
 - Exclusive-fullscreen (not borderless) apps render above every topmost window, so the
   pill is invisible there regardless of the auto-hide logic.
+- The app is unsigned, so SmartScreen can warn on a fresh download.
+- Windows-only runtime behavior still requires a real Windows smoke test; CI
+  verifies compilation, XAML, pure logic, and publishing.
+
+## Tests
+
+```bash
+dotnet test tests/TaskbarMusic.Tests/TaskbarMusic.Tests.csproj
+dotnet build src/TaskbarMusicPlayer.csproj -c Release -p:EnableWindowsTargeting=true
+```
+
+GitHub Actions runs tests and builds on both Ubuntu and Windows. Detailed
+`v1.1.0` changes and verification evidence are in [`Sol.md`](Sol.md).
+
+## License
+
+[MIT](LICENSE)

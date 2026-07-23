@@ -2,6 +2,7 @@ using System.IO;
 using System.Text;
 using System.Windows;
 using System.Windows.Threading;
+using TaskbarMusic.Interop;
 
 namespace TaskbarMusic;
 
@@ -9,6 +10,7 @@ public partial class App : Application
 {
     private MainWindow? _main;
     private CatWindow? _cat;
+    private ThemeWatcher? _themeWatcher;
 
     // ---- Crash logging ------------------------------------------------
     private static readonly string LogDir = Path.Combine(
@@ -37,8 +39,32 @@ public partial class App : Application
         // slide in from a screen edge without ever blocking clicks.
         _cat = new CatWindow();
         _main = new MainWindow(_cat);
+
+        _themeWatcher = new ThemeWatcher(Dispatcher);
+        _themeWatcher.ThemeChanged += OnThemeChanged;
+
         _main.Show();
         _cat.Show();
+    }
+
+    private void OnThemeChanged(bool light)
+    {
+        if (_main is not null)
+            ThemeWatcher.ApplyResources(_main.Resources, light);
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        _themeWatcher?.Dispose();
+        _themeWatcher = null;
+
+        _cat?.StopIdle();
+
+        DispatcherUnhandledException -= OnDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException -= OnAppDomainUnhandledException;
+        TaskScheduler.UnobservedTaskException -= OnUnobservedTaskException;
+
+        base.OnExit(e);
     }
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)

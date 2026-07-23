@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit.v3" Version="3.0.1" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../../src/Interop/ScreenGeometry.cs" Link="Interop/ScreenGeometry.cs" />
+    <Compile Include="../../src/Controls/MorphTimeline.cs" Link="Controls/MorphTimeline.cs" />
+    <Compile Include="../../src/Services/LatestVersionGate.cs" Link="Services/LatestVersionGate.cs" />
+  </ItemGroup>
+</Project>

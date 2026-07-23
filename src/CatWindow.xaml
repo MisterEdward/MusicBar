@@ -21,66 +21,81 @@
             <TranslateTransform x:Name="Slide" X="-150"/>
         </Canvas.RenderTransform>
 
-        <!-- soft shadow under the cat -->
-        <Ellipse Canvas.Left="60" Canvas.Top="82" Width="66" Height="10" Fill="#40000000"/>
+        <!-- Quiet grounding shadow. -->
+        <Ellipse Canvas.Left="55" Canvas.Top="84" Width="78" Height="6" Fill="#30000000"/>
 
-        <!-- ===== Cat body group (breathes) ===== -->
+        <!--
+            Abstract cat mark: clean organic geometry and a restrained motion-
+            branding palette. It reads as a cat at taskbar scale without using
+            cartoon outlines, whiskers, or a literal illustrated face.
+        -->
         <Canvas x:Name="CatBody" RenderTransformOrigin="0.5,1">
             <Canvas.RenderTransform>
                 <ScaleTransform x:Name="Breathe" ScaleX="1" ScaleY="1" CenterX="98" CenterY="84"/>
             </Canvas.RenderTransform>
 
-            <!-- tail (wags) -->
-            <Path x:Name="Tail" Fill="#FFA8ADB8" Stroke="#22000000" StrokeThickness="1"
-                  Data="M 74,70 C 52,74 42,60 46,44 C 48,36 56,36 55,46 C 54,58 64,66 78,62 Z"
-                  RenderTransformOrigin="0,0">
+            <!-- Tail: one confident burgundy gesture. -->
+            <Path x:Name="Tail"
+                  Data="M 78,67 C 59,78 46,68 52,53 C 55,46 62,45 64,50"
+                  Fill="Transparent"
+                  Stroke="#FFAD1F48"
+                  StrokeThickness="7"
+                  StrokeStartLineCap="Round"
+                  StrokeEndLineCap="Round">
                 <Path.RenderTransform>
-                    <RotateTransform x:Name="TailRot" Angle="0" CenterX="74" CenterY="68"/>
+                    <RotateTransform x:Name="TailRot" Angle="0" CenterX="78" CenterY="67"/>
                 </Path.RenderTransform>
             </Path>
 
-            <!-- body -->
-            <Ellipse Canvas.Left="70" Canvas.Top="42" Width="56" Height="46"
-                     Fill="#FFA8ADB8" Stroke="#22000000" StrokeThickness="1"/>
+            <!-- Low, architectural body with overlapping brand modules. -->
+            <Rectangle Canvas.Left="69" Canvas.Top="43" Width="58" Height="42"
+                       RadiusX="20" RadiusY="20" Fill="#FF08665F"/>
+            <Ellipse Canvas.Left="63" Canvas.Top="44" Width="43" Height="40"
+                     Fill="#FF1E5AF2"/>
+            <Path Data="M 91,45 C 100,43 110,46 115,54 L 115,83 L 96,83 C 92,72 90,58 91,45 Z"
+                  Fill="#FF24B2A5"/>
+            <Path Data="M 72,68 C 79,64 87,64 94,69 L 91,84 L 72,84 Z"
+                  Fill="#FFFF6846"/>
 
-            <!-- ears -->
-            <Polygon Points="82,22 78,4 96,16" Fill="#FFA8ADB8" Stroke="#22000000" StrokeThickness="1"/>
-            <Polygon Points="118,22 122,4 104,16" Fill="#FFA8ADB8" Stroke="#22000000" StrokeThickness="1"/>
-            <Polygon Points="84,20 82,9 92,15" Fill="#FFE7A8B8"/>
-            <Polygon Points="116,20 118,9 108,15" Fill="#FFE7A8B8"/>
+            <!-- Head and ears form one compact, forward-looking silhouette. -->
+            <Path Data="M 96,43 L 98,21 L 108,28 L 119,19 L 123,42
+                         C 128,49 126,60 119,65
+                         C 111,70 99,67 95,59
+                         C 92,53 92,48 96,43 Z"
+                  Fill="#FF07534E"/>
+            <Polygon Points="99,28 100,21 107,28" Fill="#FFFF6846"/>
+            <Polygon Points="117,27 119,20 112,28" Fill="#FFFFC744"/>
 
-            <!-- head -->
-            <Ellipse Canvas.Left="80" Canvas.Top="14" Width="40" Height="38"
-                     Fill="#FFB4B9C4" Stroke="#22000000" StrokeThickness="1"/>
+            <!-- A single optical line and colour point imply a face. -->
+            <Path Data="M 102,47 C 106,50 111,50 115,47"
+                  Fill="Transparent"
+                  Stroke="#FFFFC744"
+                  StrokeThickness="2"
+                  StrokeStartLineCap="Round"
+                  StrokeEndLineCap="Round"/>
+            <Ellipse Canvas.Left="118" Canvas.Top="51" Width="4" Height="4"
+                     Fill="#FFFF6846"/>
 
-            <!-- eyes (happy closed arcs) -->
-            <Path x:Name="EyeL" Stroke="#FF2A2E36" StrokeThickness="2" StrokeStartLineCap="Round"
-                  StrokeEndLineCap="Round" Data="M 88,32 Q 92,36 96,32"/>
-            <Path x:Name="EyeR" Stroke="#FF2A2E36" StrokeThickness="2" StrokeStartLineCap="Round"
-                  StrokeEndLineCap="Round" Data="M 104,32 Q 108,36 112,32"/>
-
-            <!-- nose + mouth -->
-            <Polygon Points="98,37 102,37 100,40" Fill="#FFE07A96"/>
-            <Path Stroke="#FF2A2E36" StrokeThickness="1.4" StrokeStartLineCap="Round"
-                  Data="M 100,40 L 100,42 M 100,42 Q 96,45 93,43 M 100,42 Q 104,45 107,43"/>
-
-            <!-- whiskers -->
-            <Path Stroke="#55000000" StrokeThickness="1"
-                  Data="M 84,38 L 70,36 M 84,41 L 71,42 M 116,38 L 130,36 M 116,41 L 129,42"/>
-
-            <!-- little front paws -->
-            <Ellipse Canvas.Left="86" Canvas.Top="78" Width="14" Height="9" Fill="#FFB4B9C4" Stroke="#22000000" StrokeThickness="1"/>
-            <Ellipse Canvas.Left="100" Canvas.Top="78" Width="14" Height="9" Fill="#FFB4B9C4" Stroke="#22000000" StrokeThickness="1"/>
+            <!-- Grounded feet: simple capsules, no outlined paws. -->
+            <Rectangle Canvas.Left="82" Canvas.Top="78" Width="18" Height="9"
+                       RadiusX="4.5" RadiusY="4.5" Fill="#FF07534E"/>
+            <Rectangle Canvas.Left="104" Canvas.Top="78" Width="22" Height="9"
+                       RadiusX="4.5" RadiusY="4.5" Fill="#FFAD1F48"/>
         </Canvas>
 
-        <!-- ===== Zzz (sleep behavior) ===== -->
+        <!-- Ambient sleep/activity signal: abstract particles, not cartoon Zs. -->
         <Canvas x:Name="Zzz" Opacity="0">
-            <TextBlock x:Name="Z1" Canvas.Left="120" Canvas.Top="20" Text="z" FontSize="11"
-                       FontWeight="Bold" Foreground="#FF8A9099"/>
-            <TextBlock x:Name="Z2" Canvas.Left="126" Canvas.Top="10" Text="z" FontSize="14"
-                       FontWeight="Bold" Foreground="#FF8A9099"/>
-            <TextBlock x:Name="Z3" Canvas.Left="134" Canvas.Top="-2" Text="z" FontSize="17"
-                       FontWeight="Bold" Foreground="#FF8A9099"/>
+            <Ellipse Canvas.Left="125" Canvas.Top="26" Width="5" Height="5"
+                     Fill="#FF24B2A5"/>
+            <Rectangle Canvas.Left="132" Canvas.Top="15" Width="7" Height="7"
+                       RadiusX="2" RadiusY="2" Fill="#FFFFC744"
+                       RenderTransformOrigin="0.5,0.5">
+                <Rectangle.RenderTransform>
+                    <RotateTransform Angle="45"/>
+                </Rectangle.RenderTransform>
+            </Rectangle>
+            <Ellipse Canvas.Left="139" Canvas.Top="2" Width="8" Height="8"
+                     Fill="#FFFF6846"/>
         </Canvas>
     </Canvas>
 </Window>

@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace TaskbarMusic.Services;
 
@@ -15,31 +16,97 @@ internal sealed class AppSettings
 
 internal static class SettingsService
 {
+    private const double DefaultVolumeStep = 0.02;
+    private const double MinVolumeStep = 0.001;
+    private const double MaxVolumeStep = 0.25;
+    private const double MaxCoordinateMagnitude = 1_000_000;
+    private static readonly object IoLock = new();
+
     private static readonly string Dir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TaskbarMusic");
 
     private static readonly string FilePath = Path.Combine(Dir, "settings.json");
 
-    private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
+    private static readonly JsonSerializerOptions Options = new()
+    {
+        WriteIndented = true,
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
+    };
 
     public static AppSettings Load()
     {
-        try
+        lock (IoLock)
         {
-            if (File.Exists(FilePath))
-                return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new AppSettings();
+            try
+            {
+                if (File.Exists(FilePath))
+                {
+                    var loaded = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath));
+                    return Validate(loaded ?? new AppSettings());
+                }
+            }
+            catch (Exception ex)
+            {
+                App.LogException("Settings load", ex);
+            }
+            return new AppSettings();
         }
-        catch { /* corrupt file -> defaults */ }
-        return new AppSettings();
     }
 
     public static void Save(AppSettings s)
     {
-        try
+        ArgumentNullException.ThrowIfNull(s);
+
+        lock (IoLock)
         {
-            Directory.CreateDirectory(Dir);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(s, Options));
+            string? tempPath = null;
+            try
+            {
+                Directory.CreateDirectory(Dir);
+                tempPath = Path.Combine(Dir, $"settings.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp");
+                var validated = Validate(s);
+
+                using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write,
+                           FileShare.None, 4096, FileOptions.WriteThrough))
+                {
+                    JsonSerializer.Serialize(stream, validated, Options);
+                    stream.Flush(flushToDisk: true);
+                }
+
+                File.Move(tempPath, FilePath, overwrite: true);
+                tempPath = null;
+            }
+            catch (Exception ex)
+            {
+                App.LogException("Settings save", ex);
+            }
+            finally
+            {
+                if (tempPath is not null)
+                {
+                    try { File.Delete(tempPath); }
+                    catch { /* best-effort cleanup of an incomplete write */ }
+                }
+            }
         }
-        catch { /* best effort */ }
     }
+
+    private static AppSettings Validate(AppSettings settings)
+    {
+        return new AppSettings
+        {
+            Left = ValidCoordinate(settings.Left) ? settings.Left : double.NaN,
+            Top = ValidCoordinate(settings.Top) ? settings.Top : double.NaN,
+            VolumeStep = double.IsFinite(settings.VolumeStep) &&
+                         settings.VolumeStep >= MinVolumeStep &&
+                         settings.VolumeStep <= MaxVolumeStep
+                ? settings.VolumeStep
+                : DefaultVolumeStep,
+            CatEnabled = settings.CatEnabled,
+            Locked = settings.Locked,
+        };
+    }
+
+    private static bool ValidCoordinate(double value) =>
+        double.IsNaN(value) || double.IsFinite(value) && Math.Abs(value) <= MaxCoordinateMagnitude;
 }

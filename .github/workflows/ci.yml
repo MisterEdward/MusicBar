@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+
+jobs:
+  test-and-build:
+    name: Test and build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore tests
+        run: dotnet restore tests/TaskbarMusic.Tests/TaskbarMusic.Tests.csproj
+
+      - name: Run tests
+        run: dotnet test tests/TaskbarMusic.Tests/TaskbarMusic.Tests.csproj -c Release --no-restore --warnaserror
+
+      - name: Restore application
+        run: dotnet restore src/TaskbarMusicPlayer.csproj -p:EnableWindowsTargeting=true
+
+      - name: Build application
+        run: dotnet build src/TaskbarMusicPlayer.csproj -c Release --no-restore -p:EnableWindowsTargeting=true -warnaserror
+
+  format:
+    name: Verify formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Verify C# formatting
+        env:
+          EnableWindowsTargeting: "true"
+        run: dotnet format src/TaskbarMusicPlayer.csproj --verify-no-changes --verbosity minimal
+
+  publish-smoke:
+    name: Publish ${{ matrix.rid }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rid: [win-x64, win-arm64]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish self-contained single file
+        run: >
+          dotnet publish src/TaskbarMusicPlayer.csproj
+          -c Release
+          -r ${{ matrix.rid }}
+          --self-contained true
+          -p:EnableWindowsTargeting=true
+          -p:PublishSingleFile=true
+          -p:EnableCompressionInSingleFile=true
+          -warnaserror

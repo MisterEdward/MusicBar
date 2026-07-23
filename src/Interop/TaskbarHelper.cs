@@ -4,39 +4,122 @@ using static TaskbarMusic.Interop.NativeMethods;
 namespace TaskbarMusic.Interop;
 
 /// <summary>
-/// Finds the taskbar strip for whichever monitor a screen point is on, by
-/// diffing the monitor bounds against its work area. Works on any edge and on
-/// secondary monitors; falls back to a ~bottom strip if the taskbar auto-hides.
-/// All rects are physical pixels.
+/// Finds the taskbar for whichever monitor a screen point is on. The actual
+/// shell taskbar window supplies the edge (including auto-hide and secondary
+/// monitors); the work area supplies a fallback and the visible thickness.
+/// All coordinates are physical pixels.
 /// </summary>
 internal static class TaskbarHelper
 {
-    public static bool TryGetTaskbar(POINT screenPt, out RECT strip)
+    private static readonly HashSet<string> TaskbarClasses = new(StringComparer.Ordinal)
     {
-        strip = default;
+        "Shell_TrayWnd",
+        "Shell_SecondaryTrayWnd",
+    };
+
+    public static bool TryGetTaskbar(POINT screenPt, out TaskbarGeometryResult taskbar)
+    {
+        taskbar = default;
         IntPtr hMon = MonitorFromPoint(screenPt, MONITOR_DEFAULTTONEAREST);
         var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
         if (!GetMonitorInfo(hMon, ref mi)) return false;
 
-        RECT m = mi.rcMonitor, w = mi.rcWork;
-        int bottom = m.Bottom - w.Bottom;
-        int top = w.Top - m.Top;
-        int left = w.Left - m.Left;
-        int right = m.Right - w.Right;
-        int max = Math.Max(Math.Max(bottom, top), Math.Max(left, right));
+        PixelRect monitor = ToPixelRect(mi.rcMonitor);
+        PixelRect workArea = ToPixelRect(mi.rcWork);
+        PixelRect? shellRect = TryFindTaskbarWindow(
+            hMon, mi.rcMonitor, out IntPtr taskbarHwnd, out RECT nativeRect, out TaskbarEdge? shellEdge)
+            ? ToPixelRect(nativeRect)
+            : null;
 
-        if (max <= 0)
+        int fallbackThickness = 48;
+        if (taskbarHwnd != IntPtr.Zero)
         {
-            // Auto-hidden / no taskbar reported: assume a bottom bar.
-            int h = Math.Max(40, (m.Bottom - m.Top) / 22);
-            strip = new RECT { Left = m.Left, Top = m.Bottom - h, Right = m.Right, Bottom = m.Bottom };
+            try
+            {
+                uint dpi = GetDpiForWindow(taskbarHwnd);
+                if (dpi > 0) fallbackThickness = (int)Math.Round(48 * dpi / 96.0);
+            }
+            catch (EntryPointNotFoundException)
+            {
+                // Windows 10 1607+ provides this. The app's minimum supported
+                // build does too, but retaining 96-DPI fallback is harmless.
+            }
+        }
+
+        return TaskbarGeometry.TryResolve(
+            monitor, workArea, shellRect, fallbackThickness, out taskbar, shellEdge);
+    }
+
+    private static bool TryFindTaskbarWindow(
+        IntPtr monitor,
+        RECT monitorRect,
+        out IntPtr foundHwnd,
+        out RECT foundRect,
+        out TaskbarEdge? foundEdge)
+    {
+        // For auto-hide, the HWND can sit mostly beyond its owning monitor and
+        // MonitorFromWindow(...NEAREST) may therefore select an adjacent display.
+        // ABM_GETAUTOHIDEBAREX asks Explorer for the owner by monitor + edge.
+        foreach ((uint nativeEdge, TaskbarEdge edge) in AutoHideEdges)
+        {
+            var data = new APPBARDATA
+            {
+                cbSize = Marshal.SizeOf<APPBARDATA>(),
+                uEdge = nativeEdge,
+                rc = monitorRect,
+            };
+            UIntPtr answer = SHAppBarMessage(ABM_GETAUTOHIDEBAREX, ref data);
+            if (answer == UIntPtr.Zero) continue;
+
+            IntPtr hwnd = new(unchecked((long)answer.ToUInt64()));
+            var autoHideClass = new System.Text.StringBuilder(64);
+            if (GetClassName(hwnd, autoHideClass, autoHideClass.Capacity) <= 0 ||
+                !TaskbarClasses.Contains(autoHideClass.ToString()) ||
+                !GetWindowRect(hwnd, out RECT autoHideRect))
+            {
+                continue;
+            }
+
+            foundHwnd = hwnd;
+            foundRect = autoHideRect;
+            foundEdge = edge;
             return true;
         }
 
-        if (max == bottom) strip = new RECT { Left = m.Left, Top = w.Bottom, Right = m.Right, Bottom = m.Bottom };
-        else if (max == top) strip = new RECT { Left = m.Left, Top = m.Top, Right = m.Right, Bottom = w.Top };
-        else if (max == left) strip = new RECT { Left = m.Left, Top = m.Top, Right = w.Left, Bottom = m.Bottom };
-        else strip = new RECT { Left = w.Right, Top = m.Top, Right = m.Right, Bottom = m.Bottom };
-        return true;
+        IntPtr match = IntPtr.Zero;
+        RECT rect = default;
+        var className = new System.Text.StringBuilder(64);
+
+        EnumWindows((hwnd, _) =>
+        {
+            className.Clear();
+            if (GetClassName(hwnd, className, className.Capacity) <= 0 ||
+                !TaskbarClasses.Contains(className.ToString()) ||
+                MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) != monitor ||
+                !GetWindowRect(hwnd, out RECT candidate))
+            {
+                return true;
+            }
+
+            match = hwnd;
+            rect = candidate;
+            return false;
+        }, IntPtr.Zero);
+
+        foundHwnd = match;
+        foundRect = rect;
+        foundEdge = null;
+        return match != IntPtr.Zero;
     }
+
+    private static readonly (uint NativeEdge, TaskbarEdge Edge)[] AutoHideEdges =
+    [
+        (ABE_LEFT, TaskbarEdge.Left),
+        (ABE_TOP, TaskbarEdge.Top),
+        (ABE_RIGHT, TaskbarEdge.Right),
+        (ABE_BOTTOM, TaskbarEdge.Bottom),
+    ];
+
+    private static PixelRect ToPixelRect(RECT rect) =>
+        new(rect.Left, rect.Top, rect.Right, rect.Bottom);
 }
