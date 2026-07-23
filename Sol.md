@@ -317,6 +317,8 @@ taskbar trebuie confirmată printr-un smoke test pe Windows.
 ## 13. CI și release engineering
 
 - Workflow nou `.github/workflows/ci.yml`.
+- `actions/checkout@v7` și `actions/setup-dotnet@v6` folosesc runtime-ul Node
+  curent și nu mai emit avertismentul deprecării Node 20.
 - Test și build pe `ubuntu-latest` și `windows-latest`.
 - Formatting gate pe Ubuntu.
 - Publish smoke self-contained pentru `win-x64` și `win-arm64`.
