@@ -1,0 +1,86 @@
+<Window x:Class="TaskbarMusic.CatWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="cat"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        Topmost="True"
+        ResizeMode="NoResize"
+        ShowActivated="False"
+        IsHitTestVisible="False"
+        WindowStartupLocation="Manual"
+        Left="-6000" Top="-6000"
+        Width="150" Height="96"
+        UseLayoutRounding="True">
+
+    <!-- Everything slides horizontally as one unit. -->
+    <Canvas x:Name="Root" Width="150" Height="96">
+        <Canvas.RenderTransform>
+            <TranslateTransform x:Name="Slide" X="-150"/>
+        </Canvas.RenderTransform>
+
+        <!-- soft shadow under the cat -->
+        <Ellipse Canvas.Left="60" Canvas.Top="82" Width="66" Height="10" Fill="#40000000"/>
+
+        <!-- ===== Cat body group (breathes) ===== -->
+        <Canvas x:Name="CatBody" RenderTransformOrigin="0.5,1">
+            <Canvas.RenderTransform>
+                <ScaleTransform x:Name="Breathe" ScaleX="1" ScaleY="1" CenterX="98" CenterY="84"/>
+            </Canvas.RenderTransform>
+
+            <!-- tail (wags) -->
+            <Path x:Name="Tail" Fill="#FFA8ADB8" Stroke="#22000000" StrokeThickness="1"
+                  Data="M 74,70 C 52,74 42,60 46,44 C 48,36 56,36 55,46 C 54,58 64,66 78,62 Z"
+                  RenderTransformOrigin="0,0">
+                <Path.RenderTransform>
+                    <RotateTransform x:Name="TailRot" Angle="0" CenterX="74" CenterY="68"/>
+                </Path.RenderTransform>
+            </Path>
+
+            <!-- body -->
+            <Ellipse Canvas.Left="70" Canvas.Top="42" Width="56" Height="46"
+                     Fill="#FFA8ADB8" Stroke="#22000000" StrokeThickness="1"/>
+
+            <!-- ears -->
+            <Polygon Points="82,22 78,4 96,16" Fill="#FFA8ADB8" Stroke="#22000000" StrokeThickness="1"/>
+            <Polygon Points="118,22 122,4 104,16" Fill="#FFA8ADB8" Stroke="#22000000" StrokeThickness="1"/>
+            <Polygon Points="84,20 82,9 92,15" Fill="#FFE7A8B8"/>
+            <Polygon Points="116,20 118,9 108,15" Fill="#FFE7A8B8"/>
+
+            <!-- head -->
+            <Ellipse Canvas.Left="80" Canvas.Top="14" Width="40" Height="38"
+                     Fill="#FFB4B9C4" Stroke="#22000000" StrokeThickness="1"/>
+
+            <!-- eyes (happy closed arcs) -->
+            <Path x:Name="EyeL" Stroke="#FF2A2E36" StrokeThickness="2" StrokeStartLineCap="Round"
+                  StrokeEndLineCap="Round" Data="M 88,32 Q 92,36 96,32"/>
+            <Path x:Name="EyeR" Stroke="#FF2A2E36" StrokeThickness="2" StrokeStartLineCap="Round"
+                  StrokeEndLineCap="Round" Data="M 104,32 Q 108,36 112,32"/>
+
+            <!-- nose + mouth -->
+            <Polygon Points="98,37 102,37 100,40" Fill="#FFE07A96"/>
+            <Path Stroke="#FF2A2E36" StrokeThickness="1.4" StrokeStartLineCap="Round"
+                  Data="M 100,40 L 100,42 M 100,42 Q 96,45 93,43 M 100,42 Q 104,45 107,43"/>
+
+            <!-- whiskers -->
+            <Path Stroke="#55000000" StrokeThickness="1"
+                  Data="M 84,38 L 70,36 M 84,41 L 71,42 M 116,38 L 130,36 M 116,41 L 129,42"/>
+
+            <!-- little front paws -->
+            <Ellipse Canvas.Left="86" Canvas.Top="78" Width="14" Height="9" Fill="#FFB4B9C4" Stroke="#22000000" StrokeThickness="1"/>
+            <Ellipse Canvas.Left="100" Canvas.Top="78" Width="14" Height="9" Fill="#FFB4B9C4" Stroke="#22000000" StrokeThickness="1"/>
+        </Canvas>
+
+        <!-- ===== Zzz (sleep behavior) ===== -->
+        <Canvas x:Name="Zzz" Opacity="0">
+            <TextBlock x:Name="Z1" Canvas.Left="120" Canvas.Top="20" Text="z" FontSize="11"
+                       FontWeight="Bold" Foreground="#FF8A9099"/>
+            <TextBlock x:Name="Z2" Canvas.Left="126" Canvas.Top="10" Text="z" FontSize="14"
+                       FontWeight="Bold" Foreground="#FF8A9099"/>
+            <TextBlock x:Name="Z3" Canvas.Left="134" Canvas.Top="-2" Text="z" FontSize="17"
+                       FontWeight="Bold" Foreground="#FF8A9099"/>
+        </Canvas>
+    </Canvas>
+</Window>

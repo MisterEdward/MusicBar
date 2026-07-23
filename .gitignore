@@ -1,0 +1,20 @@
+# ---- .NET build output ----
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+
+# ---- Published binaries & archives ----
+# The self-contained .exe is ~75 MB — too big to belong in git history.
+# Ship it via GitHub Releases instead.
+dist/
+*.zip
+
+# ---- IDE ----
+.vs/
+.idea/
+.vscode/
+
+# ---- OS ----
+.DS_Store
+Thumbs.db

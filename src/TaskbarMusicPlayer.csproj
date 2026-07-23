@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- The 10.0.19041.0 TFM gives us the WinRT projections (Windows.Media.Control,
+         Windows.Storage.Streams, Windows.UI, ...) directly, no extra package needed. -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <UseWPF>true</UseWPF>
+    <!-- WinForms only for the system-tray NotifyIcon. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>TaskbarMusic</AssemblyName>
+    <RootNamespace>TaskbarMusic</RootNamespace>
+    <!-- Single, self-describing window; no console. -->
+    <StartupObject>TaskbarMusic.App</StartupObject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Core Audio (system volume) -->
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+  <!-- WinForms/Drawing are only used by the tray file; keep them OUT of the
+       implicit global usings so they don't clash with WPF's Color/Brush/Application. -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+</Project>
