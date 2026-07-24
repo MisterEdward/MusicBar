@@ -80,3 +80,51 @@ jobs:
           -p:PublishSingleFile=true
           -p:EnableCompressionInSingleFile=true
           -warnaserror
+
+  startup-smoke:
+    name: Start packaged app (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish startup probe
+        run: >
+          dotnet publish src/TaskbarMusicPlayer.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:EnableCompressionInSingleFile=true
+          -warnaserror
+          -o artifacts/startup-smoke
+
+      - name: Require process to survive startup
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "artifacts/startup-smoke/TaskbarMusic.exe"
+          $process = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 12
+          $process.Refresh()
+
+          if ($process.HasExited) {
+            $log = Join-Path $env:APPDATA "TaskbarMusic/crash.log"
+            if (Test-Path $log) {
+              Write-Host "---- crash.log ----"
+              Get-Content $log
+            }
+            throw "TaskbarMusic exited during startup with code $($process.ExitCode)."
+          }
+
+          Stop-Process -Id $process.Id -Force
+
+      - name: Upload crash log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: startup-crash-log
+          path: ~/AppData/Roaming/TaskbarMusic/crash.log
+          if-no-files-found: ignore
