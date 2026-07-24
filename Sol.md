@@ -30,6 +30,11 @@ la un `PresentationSource`, iar `UpdateAnchor` apela `PointToScreen`. Acum
 `UpdateAnchor` folosește dreptunghiul fizic al HWND-ului prin `GetWindowRect`.
 Nu mai depinde de un Visual conectat în traseul de startup.
 
+Proba nu folosește `Process.MainWindowHandle`: acea proprietate poate ignora
+ferestrele WPF de tip tool window și a produs un fals negativ. În schimb, CI
+enumeră HWND-urile vizibile prin `EnumWindows`, le filtrează după PID și eșuează
+dacă aplicația loghează orice excepție în primele 12 secunde.
+
 ## 1. Rezumatul rezultatului
 
 - Update-urile media nu mai pot afișa o piesă veche peste una nouă.
@@ -352,7 +357,8 @@ Aspectul și interacțiunea pe un taskbar desktop real rămân de confirmat manu
 - Formatting gate pe Ubuntu.
 - Publish smoke self-contained pentru `win-x64` și `win-arm64`.
 - Startup smoke pe Windows pornește o copie izolată a EXE-ului timp de 12 secunde
-  și verifică existența ferestrei.
+  și verifică procesul, `crash.log` gol și cel puțin un HWND top-level vizibil
+  enumerat pentru PID-ul aplicației.
 - Toate gate-urile folosesc warnings-as-errors.
 - Native WPF sunt incluse prin `IncludeNativeLibrariesForSelfExtract=true`.
 - Versiunea proiectului este `1.1.1`, iar manifestul este `1.1.1.0`.

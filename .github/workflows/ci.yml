@@ -112,12 +112,46 @@ jobs:
           Copy-Item "artifacts/startup-smoke/TaskbarMusic.exe" `
             (Join-Path $isolated "TaskbarMusic-win-x64.exe")
           $exe = Resolve-Path (Join-Path $isolated "TaskbarMusic-win-x64.exe")
+          $log = Join-Path $env:APPDATA "TaskbarMusic/crash.log"
+          Remove-Item $log -Force -ErrorAction SilentlyContinue
+
+          Add-Type -TypeDefinition @"
+          using System;
+          using System.Runtime.InteropServices;
+
+          public static class WindowProbe
+          {
+              private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+
+              [DllImport("user32.dll")]
+              private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+              [DllImport("user32.dll")]
+              private static extern bool IsWindowVisible(IntPtr hwnd);
+
+              [DllImport("user32.dll")]
+              private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+
+              public static int CountVisibleWindows(uint expectedProcessId)
+              {
+                  int count = 0;
+                  EnumWindows((hwnd, _) =>
+                  {
+                      GetWindowThreadProcessId(hwnd, out uint processId);
+                      if (processId == expectedProcessId && IsWindowVisible(hwnd))
+                          count++;
+                      return true;
+                  }, IntPtr.Zero);
+                  return count;
+              }
+          }
+          "@
+
           $process = Start-Process -FilePath $exe -PassThru
           Start-Sleep -Seconds 12
           $process.Refresh()
 
           if ($process.HasExited) {
-            $log = Join-Path $env:APPDATA "TaskbarMusic/crash.log"
             if (Test-Path $log) {
               Write-Host "---- crash.log ----"
               Get-Content $log
@@ -125,11 +159,20 @@ jobs:
             throw "TaskbarMusic exited during startup with code $($process.ExitCode)."
           }
 
-          if ($process.MainWindowHandle -eq 0) {
+          if (Test-Path $log) {
+            Write-Host "---- crash.log ----"
+            Get-Content $log
             Stop-Process -Id $process.Id -Force
-            throw "TaskbarMusic stayed alive but did not create a visible window."
+            throw "TaskbarMusic logged an exception during startup."
           }
 
+          $visibleWindows = [WindowProbe]::CountVisibleWindows([uint32]$process.Id)
+          if ($visibleWindows -lt 1) {
+            Stop-Process -Id $process.Id -Force
+            throw "TaskbarMusic stayed alive but created no visible top-level window."
+          }
+
+          Write-Host "Startup healthy: $visibleWindows visible top-level window(s)."
           Stop-Process -Id $process.Id -Force
 
       - name: Upload crash log
