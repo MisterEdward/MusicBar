@@ -115,7 +115,9 @@ public partial class MainWindow : Window
     private void OnWindowMoved(object? sender, EventArgs e)
     {
         // Ignore our own re-anchoring and live drags (drag sets Left directly).
-        if (_adjusting || _dragging) return;
+        // WPF can raise LocationChanged while Show() is still connecting the
+        // visual tree. PointToScreen is illegal in that interval.
+        if (!_placed || _adjusting || _dragging) return;
         UpdateAnchor();
         SnapToTaskbar();
         _saveDebounce.Stop();
@@ -142,14 +144,21 @@ public partial class MainWindow : Window
     /// <summary>Pick the anchor edge from which monitor-half the pill sits on.</summary>
     private void UpdateAnchor()
     {
-        var c = Pill.PointToScreen(new Point(Pill.ActualWidth / 2, Pill.ActualHeight / 2));
-        var pt = new NativeMethods.POINT { X = (int)c.X, Y = (int)c.Y };
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero || !NativeMethods.GetWindowRect(hwnd, out var windowRect))
+            return;
+
+        var pt = new NativeMethods.POINT
+        {
+            X = windowRect.Left + (windowRect.Right - windowRect.Left) / 2,
+            Y = windowRect.Top + (windowRect.Bottom - windowRect.Top) / 2,
+        };
         var hMon = NativeMethods.MonitorFromPoint(pt, NativeMethods.MONITOR_DEFAULTTONEAREST);
         var mi = new NativeMethods.MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.MONITORINFO>() };
         if (!NativeMethods.GetMonitorInfo(hMon, ref mi)) return;
 
         double monitorCenterPx = (mi.rcMonitor.Left + mi.rcMonitor.Right) / 2.0;
-        _anchorSide = c.X < monitorCenterPx ? AnchorSide.Left : AnchorSide.Right;
+        _anchorSide = pt.X < monitorCenterPx ? AnchorSide.Left : AnchorSide.Right;
         _anchorX = _anchorSide == AnchorSide.Left ? Left : Left + ActualWidth;
     }
 

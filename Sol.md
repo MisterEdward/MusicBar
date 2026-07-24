@@ -23,6 +23,13 @@ host-ul .NET. CI copiază numai EXE-ul într-un director izolat, îl pornește p
 Windows, așteaptă 12 secunde și cere atât proces viu, cât și o fereastră vizibilă.
 Astfel testul reproduce exact forma livrată prin GitHub Releases.
 
+Prima rulare a acestui test corect a expus încă un crash real: WPF trimitea
+`LocationChanged` în timpul `Show()`, înainte ca visual tree-ul să fie conectat
+la un `PresentationSource`, iar `UpdateAnchor` apela `PointToScreen`. Acum
+`OnWindowMoved` ignoră mesajele până la finalizarea plasării, iar
+`UpdateAnchor` folosește dreptunghiul fizic al HWND-ului prin `GetWindowRect`.
+Nu mai depinde de un Visual conectat în traseul de startup.
+
 ## 1. Rezumatul rezultatului
 
 - Update-urile media nu mai pot afișa o piesă veche peste una nouă.
@@ -143,6 +150,9 @@ Hitbox-ul era dreptunghiular și ignora clipping-ul și colțurile transparente.
 - Sunt verificate `IsVisible`, `WindowState`, `Opacity` și suprafața vizibilă.
 - Hit-test-ul urmărește transformarea reală a pill-ului.
 - Cursorul trebuie să fie pe monitorul care conține partea vizibilă.
+- Hit-test-ul refuză input-ul până când suprafața este conectată la un
+  `PresentationSource`; un wheel event sosit în timpul `Show()` nu mai poate
+  provoca un `PointToScreen` invalid.
 - Colțurile stadium sunt testate prin `RoundedRectHitTest`.
 - Fiecare `MMDevice` este eliberat prin `using`.
 - Dispariția endpoint-ului audio este tratată fără excepție în UI.
@@ -311,8 +321,8 @@ Au fost produse două executabile self-contained, single-file și comprimate:
 
 | Artifact | Arhitectură verificată | SHA-256 |
 |---|---|---|
-| `TaskbarMusic-win-x64.exe` | PE32+ x86-64 GUI | `30f6854017aa64ae06fbd1ee5f4ac97ea5ea6aecb63fd5988714667cc63cad4a` |
-| `TaskbarMusic-win-arm64.exe` | PE32+ AArch64 GUI | `220df54d596d659f5bdfd9083d80803f971fa941527f3072fc6ce473f40de5c6` |
+| `TaskbarMusic-win-x64.exe` | PE32+ x86-64 GUI | `47d18fc64615b3f21b7577241b9304d20f030e4d31af581eebdd5e4b6885a296` |
+| `TaskbarMusic-win-arm64.exe` | PE32+ AArch64 GUI | `003d385fe3f3855cb771b618636f43ef7d8b351fa27e03e7f5a4d0008bb543df` |
 
 În executabil au fost confirmate:
 

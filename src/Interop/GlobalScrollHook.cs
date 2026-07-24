@@ -78,6 +78,9 @@ internal sealed class GlobalScrollHook : IDisposable
             return false;
         }
 
+        if (PresentationSource.FromVisual(_visibleSurface)?.CompositionTarget is null)
+            return false;
+
         var hwnd = new WindowInteropHelper(_target).Handle;
         if (hwnd == IntPtr.Zero) return false;
 
