@@ -1,4 +1,4 @@
-# MusicBar v1.1.0 — registrul complet al remedierii
+# MusicBar v1.1.1 — registrul complet al remedierii
 
 **Data:** 24 iulie 2026
 
@@ -6,8 +6,22 @@
 **Scop:** eliminarea bug-urilor cunoscute din audit, întărirea zonelor concurente,
 introducerea testelor și refacerea vizuală a pisicii și indicatorului idle.
 
-Acest document descrie toate schimbările făcute pentru `v1.1.0`. Raportul
+Acest document descrie toate schimbările făcute până la `v1.1.1`. Raportul
 `report.md` rămâne documentul istoric pentru `v1.0.0`.
+
+## 0. Incidentul de packaging v1.1.0
+
+Release-ul `v1.1.0` a fost retras imediat ca prerelease, iar `v1.0.0` a redevenit
+Latest. Executabilele atașate erau publicate cu `PublishSingleFile=true`, dar
+fără `IncludeNativeLibrariesForSelfExtract=true`. SDK-ul lăsa separat cinci
+DLL-uri native WPF (`wpfgfx_cor3`, `PresentationNative_cor3`, `D3DCompiler_47_cor3`,
+`PenImc_cor3` și `vcruntime140_cor3`), iar release-ul conținea doar EXE-ul.
+Aplicația se oprea înainte de `App.Main`, deci nici `crash.log` nu putea fi scris.
+
+În `v1.1.1`, librăriile native sunt incluse în bundle și extrase automat de
+host-ul .NET. CI copiază numai EXE-ul într-un director izolat, îl pornește pe
+Windows, așteaptă 12 secunde și cere atât proces viu, cât și o fereastră vizibilă.
+Astfel testul reproduce exact forma livrată prin GitHub Releases.
 
 ## 1. Rezumatul rezultatului
 
@@ -30,6 +44,7 @@ Acest document descrie toate schimbările făcute pentru `v1.1.0`. Raportul
 - Indicatorul idle și pisica au fost redesenate în limbajul vizual al referințelor primite.
 - Există 26 de teste automate și CI pe Ubuntu și Windows.
 - Build-ul Release este curat: zero warning-uri și zero erori.
+- Pachetul single-file izolat pornește efectiv pe runner-ul Windows.
 
 ## 2. Media și concurență SMTC
 
@@ -242,6 +257,8 @@ exista, dar invocarea eșua. Handle-ul creat de `Bitmap.GetHicon` nu era elibera
 - Oprește timer-ele, render loop-ul, pisica, tray-ul, hook-ul, media, audio și volumul.
 - Evenimentul media este dezabonat.
 - `App.OnExit` eliberează watcher-ul și handler-ele globale.
+- O excepție în timpul startup-ului nu mai este marcată `Handled`; procesul
+  eșuează vizibil și CI/logul pot raporta corect problema.
 
 ## 11. Teste automate
 
@@ -294,14 +311,16 @@ Au fost produse două executabile self-contained, single-file și comprimate:
 
 | Artifact | Arhitectură verificată | SHA-256 |
 |---|---|---|
-| `TaskbarMusic-win-x64.exe` | PE32+ x86-64 GUI | `383d46295ef690ed3ba060a0337c21f29face11e302e4476b7490428db83d161` |
-| `TaskbarMusic-win-arm64.exe` | PE32+ AArch64 GUI | `1b09c62b56e36056d643b0e7fffed4eb3e47b310d8947dffebb1822dfb4d07a8` |
+| `TaskbarMusic-win-x64.exe` | PE32+ x86-64 GUI | `30f6854017aa64ae06fbd1ee5f4ac97ea5ea6aecb63fd5988714667cc63cad4a` |
+| `TaskbarMusic-win-arm64.exe` | PE32+ AArch64 GUI | `220df54d596d659f5bdfd9083d80803f971fa941527f3072fc6ce473f40de5c6` |
 
 În executabil au fost confirmate:
 
-- assembly manifest `1.1.0.0`;
-- metadata aplicație `1.1.0`;
+- assembly manifest `1.1.1.0`;
+- metadata aplicație `1.1.1`;
 - DPI awareness `PerMonitorV2`.
+- folderul de publish nu mai conține DLL-uri native obligatorii lângă EXE;
+  singurul companion rămas este PDB-ul opțional.
 
 ### Verificare vizuală
 
@@ -310,9 +329,9 @@ Au fost produse două executabile self-contained, single-file și comprimate:
 - Ambele randări au fost inspectate vizual.
 - Fișierele temporare nu sunt incluse în repo.
 
-WPF nu poate fi executat pe macOS. Prin urmare, build-ul XAML este verificat,
-iar designul vectorial este verificat prin preview, dar integrarea finală în
-taskbar trebuie confirmată printr-un smoke test pe Windows.
+WPF nu poate fi executat pe macOS. Build-ul XAML și designul vectorial au fost
+verificate local, iar pornirea pachetului izolat este verificată de CI pe Windows.
+Aspectul și interacțiunea pe un taskbar desktop real rămân de confirmat manual.
 
 ## 13. CI și release engineering
 
@@ -322,8 +341,11 @@ taskbar trebuie confirmată printr-un smoke test pe Windows.
 - Test și build pe `ubuntu-latest` și `windows-latest`.
 - Formatting gate pe Ubuntu.
 - Publish smoke self-contained pentru `win-x64` și `win-arm64`.
+- Startup smoke pe Windows pornește o copie izolată a EXE-ului timp de 12 secunde
+  și verifică existența ferestrei.
 - Toate gate-urile folosesc warnings-as-errors.
-- Versiunea proiectului și manifestului este `1.1.0`.
+- Native WPF sunt incluse prin `IncludeNativeLibrariesForSelfExtract=true`.
+- Versiunea proiectului este `1.1.1`, iar manifestul este `1.1.1.0`.
 - Licență MIT adăugată.
 - Executabilele sunt publicate prin GitHub Releases, nu în Git.
 
@@ -335,7 +357,7 @@ taskbar trebuie confirmată printr-un smoke test pe Windows.
 | `LICENSE` | Licență MIT. |
 | `README.md` | Funcții și limitări actualizate; tray, release, teste și structură corecte. |
 | `report.md` | Marcat explicit drept raport istoric v1.0.0 și trimite la acest document. |
-| `Sol.md` | Registrul complet v1.1.0. |
+| `Sol.md` | Registrul complet v1.1.1, inclusiv incidentul de packaging. |
 | `src/App.xaml.cs` | Theme watcher lifecycle și cleanup handler-e globale. |
 | `src/CatWindow.xaml` | Redesign vectorial complet al pisicii. |
 | `src/CatWindow.xaml.cs` | State machine, cancellation, pending re-arm, timing 30 s și plasare fizică mixed-DPI. |
@@ -355,7 +377,7 @@ taskbar trebuie confirmată printr-un smoke test pe Windows.
 | `src/Services/TrayIconService.cs` | Fără reflection, owner public/Win32 și HICON cleanup. |
 | `src/Services/VolumeService.cs` | Dispose pentru endpoint-uri și toleranță la device removal. |
 | `src/TaskbarMusicPlayer.csproj` | Versiune, metadata, DPI WinForms aliniat și warning justificat. |
-| `src/app.manifest` | Assembly identity `1.1.0.0`. |
+| `src/app.manifest` | Assembly identity `1.1.1.0`. |
 | `tests/TaskbarMusic.Tests/TaskbarMusic.Tests.csproj` | Infrastructură xUnit cross-platform. |
 | `tests/TaskbarMusic.Tests/LatestVersionGateTests.cs` | Teste versiuni și identitate media. |
 | `tests/TaskbarMusic.Tests/MorphTimelineTests.cs` | Teste timing morph. |

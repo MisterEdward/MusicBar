@@ -11,6 +11,7 @@ public partial class App : Application
     private MainWindow? _main;
     private CatWindow? _cat;
     private ThemeWatcher? _themeWatcher;
+    private bool _startupComplete;
 
     // ---- Crash logging ------------------------------------------------
     private static readonly string LogDir = Path.Combine(
@@ -45,6 +46,7 @@ public partial class App : Application
 
         _main.Show();
         _cat.Show();
+        _startupComplete = true;
     }
 
     private void OnThemeChanged(bool light)
@@ -70,7 +72,10 @@ public partial class App : Application
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         LogException("UI thread (DispatcherUnhandledException)", e.Exception);
-        e.Handled = true; // survive; the stack is already captured
+        // A startup exception can leave only an invisible process behind.
+        // Let it terminate so users and the packaged-startup CI get a truthful
+        // failure; frame-level exceptions after both windows show remain logged.
+        e.Handled = _startupComplete;
     }
 
     private void OnAppDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)

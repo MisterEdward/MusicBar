@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
 
-  <assemblyIdentity version="1.1.0.0" name="TaskbarMusic.app" />
+  <assemblyIdentity version="1.1.1.0" name="TaskbarMusic.app" />
 
   <!-- Per-monitor v2 DPI awareness: required so the widget lands on the right
        pixels when dragged between monitors with different scaling. -->

@@ -78,6 +78,7 @@ jobs:
           --self-contained true
           -p:EnableWindowsTargeting=true
           -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
           -p:EnableCompressionInSingleFile=true
           -warnaserror
 
@@ -98,6 +99,7 @@ jobs:
           -r win-x64
           --self-contained true
           -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
           -p:EnableCompressionInSingleFile=true
           -warnaserror
           -o artifacts/startup-smoke
@@ -105,7 +107,11 @@ jobs:
       - name: Require process to survive startup
         shell: pwsh
         run: |
-          $exe = Resolve-Path "artifacts/startup-smoke/TaskbarMusic.exe"
+          $ErrorActionPreference = "Stop"
+          $isolated = New-Item -ItemType Directory -Path "artifacts/release-probe"
+          Copy-Item "artifacts/startup-smoke/TaskbarMusic.exe" `
+            (Join-Path $isolated "TaskbarMusic-win-x64.exe")
+          $exe = Resolve-Path (Join-Path $isolated "TaskbarMusic-win-x64.exe")
           $process = Start-Process -FilePath $exe -PassThru
           Start-Sleep -Seconds 12
           $process.Refresh()
@@ -117,6 +123,11 @@ jobs:
               Get-Content $log
             }
             throw "TaskbarMusic exited during startup with code $($process.ExitCode)."
+          }
+
+          if ($process.MainWindowHandle -eq 0) {
+            Stop-Process -Id $process.Id -Force
+            throw "TaskbarMusic stayed alive but did not create a visible window."
           }
 
           Stop-Process -Id $process.Id -Force

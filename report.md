@@ -1,7 +1,7 @@
 # MusicBar — Engineering Report
 
 > **Historical document:** this report describes the `v1.0.0` implementation.
-> The completed `v1.1.0` remediation, tests, visual redesign, and verification
+> The completed `v1.1.1` remediation, tests, visual redesign, and verification
 > record are documented in [`Sol.md`](Sol.md).
 
 **Purpose:** this document is written for an independent AI reviewer (Fable 5) to audit the

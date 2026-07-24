@@ -25,7 +25,11 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>TaskbarMusic</AssemblyName>
     <RootNamespace>TaskbarMusic</RootNamespace>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
+    <!-- A WPF single-file publish still leaves native rendering/input DLLs
+         beside the EXE unless they are explicitly bundled for self-extraction.
+         Shipping only the old EXE caused v1.1.0 to fail before App.Main. -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <Authors>MisterEdward</Authors>
     <RepositoryUrl>https://github.com/MisterEdward/MusicBar</RepositoryUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

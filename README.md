@@ -48,7 +48,7 @@ Or build a self-contained single .exe you can drop anywhere:
 
 ```bash
 cd src
-dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
+dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
 ```
 
 The .exe lands in `src/bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/TaskbarMusic.exe`.
@@ -67,11 +67,11 @@ That includes the XAML markup compiler, so it's a genuine full build, not just a
 check. You can even produce the shipping binary from a Mac:
 
 ```bash
-cd src && dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableWindowsTargeting=true -p:EnableCompressionInSingleFile=true
+cd src && dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableWindowsTargeting=true -p:EnableCompressionInSingleFile=true
 ```
 
-This project was in fact written and built entirely on macOS; only testing happened on
-Windows 11.
+The Windows CI also launches an isolated copy of the packaged EXE. This catches
+missing native WPF dependencies that a build-only check cannot detect.
 
 ---
 
@@ -154,7 +154,8 @@ dotnet build src/TaskbarMusicPlayer.csproj -c Release -p:EnableWindowsTargeting=
 ```
 
 GitHub Actions runs tests and builds on both Ubuntu and Windows. Detailed
-`v1.1.0` changes and verification evidence are in [`Sol.md`](Sol.md).
+`v1.1.1` changes, the withdrawn `v1.1.0` packaging incident, and verification
+evidence are in [`Sol.md`](Sol.md).
 
 ## License
 
