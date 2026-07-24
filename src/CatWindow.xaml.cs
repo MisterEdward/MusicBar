@@ -25,7 +25,6 @@ public partial class CatWindow : Window
     private Func<CatAnchor?>? _getPillAnchor;
     private Func<CatAnchor?>? _pendingPillAnchor;
     private CancellationTokenSource? _visitCancellation;
-    private Task _visit = Task.CompletedTask;
     private bool _onStage;
     private double _offstageX = -150;
     private VisitState _state;
@@ -81,7 +80,7 @@ public partial class CatWindow : Window
 
         _getPillAnchor = getPillAnchor;
         _visitCancellation = new CancellationTokenSource();
-        _visit = RunVisitAsync(_visitCancellation);
+        _ = RunVisitAsync(_visitCancellation);
     }
 
     public void StopIdle()
@@ -89,14 +88,6 @@ public partial class CatWindow : Window
         Dispatcher.VerifyAccess();
         _pendingPillAnchor = null;
         _visitCancellation?.Cancel();
-    }
-
-    /// <summary>Waits for the active visit to stop. Used by application shutdown.</summary>
-    public async Task StopIdleAsync()
-    {
-        Dispatcher.VerifyAccess();
-        StopIdle();
-        await _visit;
     }
 
     // ---- State machine ----------------------------------------------------

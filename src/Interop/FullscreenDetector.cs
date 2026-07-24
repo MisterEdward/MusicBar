@@ -30,12 +30,6 @@ internal static class FullscreenDetector
         GetClassName(fg, sb, sb.Capacity);
         if (ShellClasses.Contains(sb.ToString())) return false;
 
-        // Belt-and-suspenders: any full-screen-looking window owned by explorer.exe
-        // is shell chrome (Task View, Alt-Tab, taskbar), never a real fullscreen app —
-        // even if Microsoft renames a class we don't know about. This is what made the
-        // pill vanish on a taskbar/Task-View click ("need one more click to bring back").
-        if (IsExplorerOwned(fg)) return false;
-
         IntPtr foregroundMonitor = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
         if (foregroundMonitor != MonitorFromWindow(pillHwnd, MONITOR_DEFAULTTONEAREST)) return false;
 
@@ -47,6 +41,11 @@ internal static class FullscreenDetector
         RECT m = mi.rcMonitor;
         var monitor = new PixelRect(m.Left, m.Top, m.Right, m.Bottom);
         if (!FullscreenGeometry.CoversMonitor(window, monitor)) return false;
+
+        // ProcessName opens a process handle internally. Keep this defensive
+        // Explorer fallback after the cheap monitor/geometry filters so normal
+        // foreground windows do not pay that cost every 600 ms.
+        if (IsExplorerOwned(fg)) return false;
 
         // A normal maximised window retains WS_CAPTION. Geometry remains the
         // primary test: borderless games and browser/video fullscreen modes often

@@ -411,3 +411,18 @@ Aspectul și interacțiunea pe un taskbar desktop real rămân de confirmat manu
 
 Acestea nu sunt declarate „verificate”. CI și testele reduc riscul, dar nu
 înlocuiesc smoke test-ul Windows.
+
+## 16. Mentenanță după v1.1.1
+
+- Filtrul defensiv `IsExplorerOwned` rulează numai după ce fereastra foreground
+  a trecut filtrele ieftine de monitor și acoperire fullscreen. Ferestrele
+  obișnuite nu mai provoacă o interogare `ProcessName` la fiecare tick de 600 ms.
+- `CatWindow.StopIdleAsync` și câmpul `_visit`, ambele nefolosite, au fost
+  eliminate. Vizita rămâne fire-and-forget, cu anulare și tratarea internă a
+  tuturor excepțiilor.
+- `SemaphoreSlim` din `MediaService` rămâne intenționat nedisposed: codul nu
+  accesează `AvailableWaitHandle`, iar dispose în timpul operațiilor asincrone
+  ar introduce curse fără un beneficiu material.
+- Source-linking-ul testelor pure rămâne intenționat pentru CI cross-platform.
+  Extragerea într-un proiect Core este amânată până când suprafața de logică
+  independentă justifică refactorul.
